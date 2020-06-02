@@ -1,7 +1,7 @@
 <!-- Delete on release branches -->
 <img src='https://s3-us-west-2.amazonaws.com/cortex-public/logo.png' height='88'>
 
-# Machine learning model serving infrastructure
+# Machine learning model serving infrastructure (j.kim)
 
 <br>
 
