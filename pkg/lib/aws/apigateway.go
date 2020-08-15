@@ -31,6 +31,13 @@ func (c *Client) CreateAPIGateway(name string, tags map[string]string) (string, 
 		Name:         aws.String(name),
 		ProtocolType: aws.String(apigatewayv2.ProtocolTypeHttp),
 		Tags:         aws.StringMap(tags),
+		CorsConfiguration: &apigatewayv2.Cors{
+			AllowHeaders:  aws.StringSlice([]string{"*"}),
+			AllowMethods:  aws.StringSlice([]string{"*"}),
+			AllowOrigins:  aws.StringSlice([]string{"*"}),
+			ExposeHeaders: aws.StringSlice([]string{"*"}),
+			MaxAge:        aws.Int64(600),
+		},
 	})
 	if err != nil {
 		return "", errors.Wrap(err, "failed to create api gateway")
