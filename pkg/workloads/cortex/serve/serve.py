@@ -23,6 +23,7 @@ import threading
 import math
 import asyncio
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Body, FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -65,6 +66,7 @@ local_cache = {
     "predictor_impl": None,
     "predict_route": None,
     "client": None,
+    "background_thread_pool": None,
     "class_set": set(),
 }
 
@@ -214,7 +216,7 @@ def predict(request: Request):
 
     if util.has_method(predictor_impl, "post_predict"):
         kwargs = build_post_predict_kwargs(prediction, request)
-        tasks.add_task(predictor_impl.post_predict, **kwargs)
+        local_cache["background_thread_pool"].submit(predictor_impl.post_predict, **kwargs)
 
     if len(tasks.tasks) > 0:
         response.background = tasks
@@ -322,6 +324,10 @@ def start_fn():
             local_cache["post_predict_fn_args"] = inspect.getfullargspec(
                 predictor_impl.post_predict
             ).args
+
+            local_cache["background_thread_pool"] = ThreadPoolExecutor(
+                max_workers=int(os.environ["CORTEX_THREADS_PER_PROCESS"])
+            )
 
         predict_route = "/"
         if provider != "local":
