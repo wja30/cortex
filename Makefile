@@ -227,3 +227,5 @@ ci-build-cli:
 
 ci-build-and-upload-cli:
 	@./build/cli.sh upload
+
+# test jkim
