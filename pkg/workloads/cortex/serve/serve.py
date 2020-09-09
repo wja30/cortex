@@ -18,7 +18,6 @@ import argparse
 import inspect
 import time
 import json
-import msgpack
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import math
@@ -29,21 +28,15 @@ from fastapi import Body, FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import Response, PlainTextResponse, JSONResponse
 from starlette.background import BackgroundTasks
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from cortex import consts
 from cortex.lib import util
-from cortex.lib.type import API
+from cortex.lib.type import API, get_spec
 from cortex.lib.log import cx_logger
-from cortex.lib.storage import S3, LocalStorage
+from cortex.lib.storage import S3, LocalStorage, FileLock
 from cortex.lib.exceptions import UserRuntimeException
-
-if os.environ["CORTEX_VERSION"] != consts.CORTEX_VERSION:
-    errMsg = f"your Cortex operator version ({os.environ['CORTEX_VERSION']}) doesn't match your predictor image version ({consts.CORTEX_VERSION}); please update your predictor image by modifying the `image` field in your API configuration file (e.g. cortex.yaml) and re-running `cortex deploy`, or update your cluster by following the instructions at https://docs.cortex.dev/cluster-management/update"
-    raise ValueError(errMsg)
-
 
 API_SUMMARY_MESSAGE = (
     "make a prediction by sending a post request to this endpoint with a json payload"
@@ -52,10 +45,9 @@ API_SUMMARY_MESSAGE = (
 API_LIVENESS_UPDATE_PERIOD = 5  # seconds
 
 
+request_thread_pool = ThreadPoolExecutor(max_workers=int(os.environ["CORTEX_THREADS_PER_PROCESS"]))
 loop = asyncio.get_event_loop()
-loop.set_default_executor(
-    ThreadPoolExecutor(max_workers=int(os.environ["CORTEX_THREADS_PER_WORKER"]))
-)
+loop.set_default_executor(request_thread_pool)
 
 app = FastAPI()
 
@@ -168,9 +160,15 @@ async def parse_payload(request: Request, call_next):
     if content_type.startswith("multipart/form") or content_type.startswith(
         "application/x-www-form-urlencoded"
     ):
-        request.state.payload = await request.form()
+        try:
+            request.state.payload = await request.form()
+        except Exception as e:
+            return PlainTextResponse(content=str(e), status_code=400)
     elif content_type.startswith("application/json"):
-        request.state.payload = await request.json()
+        try:
+            request.state.payload = await request.json()
+        except json.JSONDecodeError as e:
+            return JSONResponse(content={"error": str(e)}, status_code=400)
     else:
         request.state.payload = await request.body()
 
@@ -178,11 +176,12 @@ async def parse_payload(request: Request, call_next):
 
 
 def predict(request: Request):
+    tasks = BackgroundTasks()
     api = local_cache["api"]
     predictor_impl = local_cache["predictor_impl"]
-    args = build_predict_args(request)
+    kwargs = build_predict_kwargs(request)
 
-    prediction = predictor_impl.predict(**args)
+    prediction = predictor_impl.predict(**kwargs)
 
     if isinstance(prediction, bytes):
         response = Response(content=prediction, media_type="application/octet-stream")
@@ -208,59 +207,76 @@ def predict(request: Request):
                 api.monitoring.model_type == "classification"
                 and predicted_value not in local_cache["class_set"]
             ):
-                tasks = BackgroundTasks()
                 tasks.add_task(api.upload_class, class_name=predicted_value)
                 local_cache["class_set"].add(predicted_value)
-                response.background = tasks
         except:
             cx_logger().warn("unable to record prediction metric", exc_info=True)
+
+    if util.has_method(predictor_impl, "post_predict"):
+        kwargs = build_post_predict_kwargs(prediction, request)
+        tasks.add_task(predictor_impl.post_predict, **kwargs)
+
+    if len(tasks.tasks) > 0:
+        response.background = tasks
 
     return response
 
 
-def build_predict_args(request: Request):
-    args = {}
+def build_predict_kwargs(request: Request):
+    kwargs = {}
 
     if "payload" in local_cache["predict_fn_args"]:
-        args["payload"] = request.state.payload
+        kwargs["payload"] = request.state.payload
     if "headers" in local_cache["predict_fn_args"]:
-        args["headers"] = request.headers
+        kwargs["headers"] = request.headers
     if "query_params" in local_cache["predict_fn_args"]:
-        args["query_params"] = request.query_params
+        kwargs["query_params"] = request.query_params
+    if "batch_id" in local_cache["predict_fn_args"]:
+        kwargs["batch_id"] = None
 
-    return args
+    return kwargs
+
+
+def build_post_predict_kwargs(response, request: Request):
+    kwargs = {}
+
+    if "payload" in local_cache["post_predict_fn_args"]:
+        kwargs["payload"] = request.state.payload
+    if "headers" in local_cache["post_predict_fn_args"]:
+        kwargs["headers"] = request.headers
+    if "query_params" in local_cache["post_predict_fn_args"]:
+        kwargs["query_params"] = request.query_params
+    if "response" in local_cache["post_predict_fn_args"]:
+        kwargs["response"] = response
+
+    return kwargs
 
 
 def get_summary():
     response = {"message": API_SUMMARY_MESSAGE}
 
-    if hasattr(local_cache["client"], "input_signature"):
-        response["model_signature"] = local_cache["client"].input_signature
+    if hasattr(local_cache["client"], "input_signatures"):
+        response["model_signatures"] = local_cache["client"].input_signatures
+
     return response
 
 
-def get_spec(provider, storage, cache_dir, spec_path):
-    if provider == "local":
-        return read_msgpack(spec_path)
-
-    local_spec_path = os.path.join(cache_dir, "api_spec.msgpack")
-    _, key = S3.deconstruct_s3_path(spec_path)
-    storage.download_file(key, local_spec_path)
-    return read_msgpack(local_spec_path)
-
-
-def read_msgpack(msgpack_path):
-    with open(msgpack_path, "rb") as msgpack_file:
-        return msgpack.load(msgpack_file, raw=False)
-
-
+# this exists so that the user's __init__() can be executed by the request thread pool, which helps
+# to avoid errors that occur when the user's __init__() function must be called by the same thread
+# which executes predict(). This only avoids errors if threads_per_worker == 1
 def start():
+    future = request_thread_pool.submit(start_fn)
+    return future.result()
+
+
+def start_fn():
     cache_dir = os.environ["CORTEX_CACHE_DIR"]
     provider = os.environ["CORTEX_PROVIDER"]
     spec_path = os.environ["CORTEX_API_SPEC"]
     project_dir = os.environ["CORTEX_PROJECT_DIR"]
-    model_dir = os.getenv("CORTEX_MODEL_DIR", None)
-    tf_serving_port = os.getenv("CORTEX_TF_SERVING_PORT", "9000")
+
+    model_dir = os.getenv("CORTEX_MODEL_DIR")
+    tf_serving_port = os.getenv("CORTEX_TF_BASE_SERVING_PORT", "9000")
     tf_serving_host = os.getenv("CORTEX_TF_SERVING_HOST", "localhost")
 
     if provider == "local":
@@ -268,20 +284,45 @@ def start():
     else:
         storage = S3(bucket=os.environ["CORTEX_BUCKET"], region=os.environ["AWS_REGION"])
 
+    has_multiple_servers = os.getenv("CORTEX_MULTIPLE_TF_SERVERS")
+    if has_multiple_servers:
+        with FileLock("/run/used_ports.json.lock"):
+            with open("/run/used_ports.json", "r+") as f:
+                used_ports = json.load(f)
+                for port in used_ports.keys():
+                    if not used_ports[port]:
+                        tf_serving_port = port
+                        used_ports[port] = True
+                        break
+                f.seek(0)
+                json.dump(used_ports, f)
+                f.truncate()
+
     try:
         raw_api_spec = get_spec(provider, storage, cache_dir, spec_path)
-        api = API(provider=provider, storage=storage, cache_dir=cache_dir, **raw_api_spec)
+        api = API(
+            provider=provider,
+            storage=storage,
+            model_dir=model_dir,
+            cache_dir=cache_dir,
+            **raw_api_spec,
+        )
         client = api.predictor.initialize_client(
-            model_dir, tf_serving_host=tf_serving_host, tf_serving_port=tf_serving_port
+            tf_serving_host=tf_serving_host, tf_serving_port=tf_serving_port
         )
         cx_logger().info("loading the predictor from {}".format(api.predictor.path))
-        predictor_impl = api.predictor.initialize_impl(project_dir, client)
+        predictor_impl = api.predictor.initialize_impl(project_dir, client, raw_api_spec, None)
 
         local_cache["api"] = api
         local_cache["provider"] = provider
         local_cache["client"] = client
         local_cache["predictor_impl"] = predictor_impl
         local_cache["predict_fn_args"] = inspect.getfullargspec(predictor_impl.predict).args
+        if util.has_method(predictor_impl, "post_predict"):
+            local_cache["post_predict_fn_args"] = inspect.getfullargspec(
+                predictor_impl.post_predict
+            ).args
+
         predict_route = "/"
         if provider != "local":
             predict_route = "/predict"

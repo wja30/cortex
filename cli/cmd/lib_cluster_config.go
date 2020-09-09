@@ -169,6 +169,7 @@ func getInstallClusterConfig(awsCreds AWSCredentials, envName string, disallowPr
 
 	err = clusterConfig.Validate(awsClient)
 	if err != nil {
+		err = errors.Append(err, fmt.Sprintf("\n\ncluster configuration schema can be found here: https://docs.cortex.dev/v/%s/cluster-management/config", consts.CortexVersionMinor))
 		if _flagClusterConfig != "" {
 			err = errors.Wrap(err, _flagClusterConfig)
 		}
@@ -234,6 +235,7 @@ func getConfigureClusterConfig(cachedClusterConfig clusterconfig.Config, awsCred
 
 	err = userClusterConfig.Validate(awsClient)
 	if err != nil {
+		err = errors.Append(err, fmt.Sprintf("\n\ncluster configuration schema can be found here: https://docs.cortex.dev/v/%s/cluster-management/config", consts.CortexVersionMinor))
 		if _flagClusterConfig != "" {
 			err = errors.Wrap(err, _flagClusterConfig)
 		}
@@ -312,6 +314,11 @@ func setConfigFieldsFromCached(userClusterConfig *clusterconfig.Config, cachedCl
 		return clusterconfig.ErrorConfigCannotBeChangedOnUpdate(clusterconfig.OperatorLoadBalancerSchemeKey, cachedClusterConfig.OperatorLoadBalancerScheme)
 	}
 	userClusterConfig.OperatorLoadBalancerScheme = cachedClusterConfig.OperatorLoadBalancerScheme
+
+	if userClusterConfig.APIGatewaySetting != cachedClusterConfig.APIGatewaySetting {
+		return clusterconfig.ErrorConfigCannotBeChangedOnUpdate(clusterconfig.APIGatewaySettingKey, cachedClusterConfig.APIGatewaySetting)
+	}
+	userClusterConfig.APIGatewaySetting = cachedClusterConfig.APIGatewaySetting
 
 	if userClusterConfig.Spot != nil && *userClusterConfig.Spot != *cachedClusterConfig.Spot {
 		return clusterconfig.ErrorConfigCannotBeChangedOnUpdate(clusterconfig.SpotKey, *cachedClusterConfig.Spot)
@@ -457,9 +464,10 @@ func confirmInstallClusterConfig(clusterConfig *clusterconfig.Config, awsCreds A
 	}
 	fmt.Printf("cortex will also create an s3 bucket (%s) and a cloudwatch log group (%s)%s\n\n", clusterConfig.Bucket, clusterConfig.LogGroup, privateSubnetMsg)
 
-	if clusterConfig.APILoadBalancerScheme == clusterconfig.InternalLoadBalancerScheme {
-		fmt.Print("warning: you've configured the API load balancer to be internal; you must configure VPC Peering or an API Gateway VPC Link to connect to your APIs (see https://docs.cortex.dev/guides/vpc-peering or https://docs.cortex.dev/guides/api-gateway)\n\n")
+	if clusterConfig.APIGatewaySetting == clusterconfig.DisabledAPIGatewaySetting {
+		fmt.Print("warning: you've disabled API Gateway cluster-wide, so APIs will not be able to create API Gateway endpoints (they will still be reachable via the API load balancer; see https://docs.cortex.dev/deployments/networking for more information)\n\n")
 	}
+
 	if clusterConfig.OperatorLoadBalancerScheme == clusterconfig.InternalLoadBalancerScheme {
 		fmt.Print("warning: you've configured the operator load balancer to be internal; you must configure VPC Peering to connect your CLI to your cluster operator (see https://docs.cortex.dev/guides/vpc-peering)\n\n")
 	}
@@ -479,7 +487,7 @@ func confirmInstallClusterConfig(clusterConfig *clusterconfig.Config, awsCreds A
 }
 
 func confirmConfigureClusterConfig(clusterConfig clusterconfig.Config, awsCreds AWSCredentials, awsClient *aws.Client, disallowPrompt bool) {
-	fmt.Println(clusterConfigConfirmaionStr(clusterConfig, awsCreds, awsClient))
+	fmt.Println(clusterConfigConfirmationStr(clusterConfig, awsCreds, awsClient))
 
 	if !disallowPrompt {
 		exitMessage := fmt.Sprintf("cluster configuration can be modified via the cluster config file; see https://docs.cortex.dev/v/%s/cluster-management/config for more information", consts.CortexVersionMinor)
@@ -487,7 +495,7 @@ func confirmConfigureClusterConfig(clusterConfig clusterconfig.Config, awsCreds 
 	}
 }
 
-func clusterConfigConfirmaionStr(clusterConfig clusterconfig.Config, awsCreds AWSCredentials, awsClient *aws.Client) string {
+func clusterConfigConfirmationStr(clusterConfig clusterconfig.Config, awsCreds AWSCredentials, awsClient *aws.Client) string {
 	defaultConfig, _ := clusterconfig.GetDefaults()
 
 	var items table.KeyValuePairs
@@ -535,6 +543,9 @@ func clusterConfigConfirmaionStr(clusterConfig clusterconfig.Config, awsCreds AW
 	}
 	if clusterConfig.OperatorLoadBalancerScheme != defaultConfig.OperatorLoadBalancerScheme {
 		items.Add(clusterconfig.OperatorLoadBalancerSchemeUserKey, clusterConfig.OperatorLoadBalancerScheme)
+	}
+	if clusterConfig.APIGatewaySetting != defaultConfig.APIGatewaySetting {
+		items.Add(clusterconfig.APIGatewaySettingUserKey, clusterConfig.APIGatewaySetting)
 	}
 
 	if clusterConfig.Spot != nil && *clusterConfig.Spot != *defaultConfig.Spot {
@@ -590,6 +601,12 @@ func clusterConfigConfirmaionStr(clusterConfig clusterconfig.Config, awsCreds AW
 	}
 	if clusterConfig.ImageMetricsServer != defaultConfig.ImageMetricsServer {
 		items.Add(clusterconfig.ImageMetricsServerUserKey, clusterConfig.ImageMetricsServer)
+	}
+	if clusterConfig.ImageInferentia != defaultConfig.ImageInferentia {
+		items.Add(clusterconfig.ImageInferentiaUserKey, clusterConfig.ImageInferentia)
+	}
+	if clusterConfig.ImageNeuronRTD != defaultConfig.ImageNeuronRTD {
+		items.Add(clusterconfig.ImageNeuronRTDUserKey, clusterConfig.ImageNeuronRTD)
 	}
 	if clusterConfig.ImageNvidia != defaultConfig.ImageNvidia {
 		items.Add(clusterconfig.ImageNvidiaUserKey, clusterConfig.ImageNvidia)

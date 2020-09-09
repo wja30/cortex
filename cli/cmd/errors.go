@@ -22,12 +22,14 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/cortexlabs/cortex/pkg/consts"
 	"github.com/cortexlabs/cortex/pkg/lib/errors"
 	s "github.com/cortexlabs/cortex/pkg/lib/strings"
 	"github.com/cortexlabs/cortex/pkg/lib/urls"
 	"github.com/cortexlabs/cortex/pkg/types"
 	"github.com/cortexlabs/cortex/pkg/types/clusterconfig"
 	"github.com/cortexlabs/cortex/pkg/types/clusterstate"
+	"github.com/cortexlabs/cortex/pkg/types/userconfig"
 )
 
 const (
@@ -46,6 +48,7 @@ func getCloudFormationURL(clusterName, region string) string {
 const (
 	ErrInvalidProvider                      = "cli.invalid_provider"
 	ErrNotSupportedInLocalEnvironment       = "cli.not_supported_in_local_environment"
+	ErrCommandNotSupportedForKind           = "cli.command_not_supported_for_kind"
 	ErrEnvironmentNotFound                  = "cli.environment_not_found"
 	ErrOperatorEndpointInLocalEnvironment   = "cli.operator_endpoint_in_local_environment"
 	ErrOperatorConfigFromLocalEnvironment   = "cli.operater_config_from_local_environment"
@@ -76,6 +79,8 @@ const (
 	ErrClusterConfigOrPromptsRequired       = "cli.cluster_config_or_prompts_required"
 	ErrClusterAccessConfigOrPromptsRequired = "cli.cluster_access_config_or_prompts_required"
 	ErrShellCompletionNotSupported          = "cli.shell_completion_not_supported"
+	ErrNoTerminalWidth                      = "cli.no_terminal_width"
+	ErrDeployFromTopLevelDir                = "cli.deploy_from_top_level_dir"
 )
 
 func ErrorInvalidProvider(providerStr string) error {
@@ -89,6 +94,13 @@ func ErrorNotSupportedInLocalEnvironment() error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrNotSupportedInLocalEnvironment,
 		Message: "this command is not supported in local environment",
+	})
+}
+
+func ErrorCommandNotSupportedForKind(kind userconfig.Kind, command string) error {
+	return errors.WithStack(&errors.Error{
+		Kind:    ErrCommandNotSupportedForKind,
+		Message: fmt.Sprintf("the `%s` command is not supported for %s kind", command, kind),
 	})
 }
 
@@ -289,7 +301,7 @@ func ErrorClusterAlreadyDeleted(clusterName string, region string) error {
 func ErrorFailedClusterStatus(status clusterstate.Status, clusterName string, region string) error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrFailedClusterStatus,
-		Message: fmt.Sprintf("cluster \"%s\" in %s encountered an unexpected status %s; please try to delete the cluster with `cortex cluster down`, or delete the cloudformation stacks manually in your AWS console (%s)", clusterName, region, string(status), getCloudFormationURL(clusterName, region)),
+		Message: fmt.Sprintf("cluster \"%s\" in %s encountered an unexpected status %s; please try to delete the cluster with `cortex cluster down`, or delete the cloudformation stacks directly from your AWS console (%s)", clusterName, region, string(status), getCloudFormationURL(clusterName, region)),
 	})
 }
 
@@ -317,6 +329,24 @@ func ErrorClusterAccessConfigOrPromptsRequired() error {
 func ErrorShellCompletionNotSupported(shell string) error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrShellCompletionNotSupported,
-		Message: fmt.Sprintf("shell completion for %s is not supported", shell),
+		Message: fmt.Sprintf("shell completion for %s is not supported (only bash and zsh are supported)", shell),
+	})
+}
+
+func ErrorNoTerminalWidth() error {
+	return errors.WithStack(&errors.Error{
+		Kind:    ErrNoTerminalWidth,
+		Message: "unable to determine terminal width; please re-run the command without the `--watch` flag",
+	})
+}
+
+func ErrorDeployFromTopLevelDir(genericDirName string, providerType types.ProviderType) error {
+	targetStr := "cluster"
+	if providerType == types.LocalProviderType {
+		targetStr = "API container"
+	}
+	return errors.WithStack(&errors.Error{
+		Kind:    ErrDeployFromTopLevelDir,
+		Message: fmt.Sprintf("cannot deploy from your %s directory - when deploying your API, cortex sends all files in your project directory (i.e. the directory which contains cortex.yaml) to your %s (see https://docs.cortex.dev/v/%s/deployments/realtime-api/predictors#project-files for Realtime API and https://docs.cortex.dev/v/%s/deployments/batch-api/predictors#project-files for Batch API); therefore it is recommended to create a subdirectory for your project files", genericDirName, targetStr, consts.CortexVersionMinor, consts.CortexVersionMinor),
 	})
 }

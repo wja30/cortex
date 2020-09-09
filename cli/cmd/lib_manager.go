@@ -137,7 +137,7 @@ func runManager(containerConfig *container.Config, addNewLineAfterPull bool) (st
 	return output, &info.State.ExitCode, nil
 }
 
-func runManagerUpdateCommand(entrypoint string, clusterConfig *clusterconfig.Config, awsCreds AWSCredentials, envName string) (string, *int, error) {
+func runManagerWithClusterConfig(entrypoint string, clusterConfig *clusterconfig.Config, awsCreds AWSCredentials, envName string) (string, *int, error) {
 	clusterConfigBytes, err := yaml.Marshal(clusterConfig)
 	if err != nil {
 		return "", nil, errors.WithStack(err)
@@ -172,8 +172,10 @@ func runManagerUpdateCommand(entrypoint string, clusterConfig *clusterconfig.Con
 			"CORTEX_CLUSTER_WORKSPACE=" + clusterWorkspace,
 			"CORTEX_IMAGE_PYTHON_PREDICTOR_CPU=" + consts.DefaultImagePythonPredictorCPU,
 			"CORTEX_IMAGE_PYTHON_PREDICTOR_GPU=" + consts.DefaultImagePythonPredictorGPU,
+			"CORTEX_IMAGE_PYTHON_PREDICTOR_INF=" + consts.DefaultImagePythonPredictorInf,
 			"CORTEX_IMAGE_TENSORFLOW_SERVING_CPU=" + consts.DefaultImageTensorFlowServingCPU,
 			"CORTEX_IMAGE_TENSORFLOW_SERVING_GPU=" + consts.DefaultImageTensorFlowServingGPU,
+			"CORTEX_IMAGE_TENSORFLOW_SERVING_INF=" + consts.DefaultImageTensorFlowServingInf,
 			"CORTEX_IMAGE_TENSORFLOW_PREDICTOR=" + consts.DefaultImageTensorFlowPredictor,
 			"CORTEX_IMAGE_ONNX_PREDICTOR_CPU=" + consts.DefaultImageONNXPredictorCPU,
 			"CORTEX_IMAGE_ONNX_PREDICTOR_GPU=" + consts.DefaultImageONNXPredictorGPU,

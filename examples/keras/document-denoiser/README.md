@@ -1,5 +1,7 @@
 # Clean Dirty Documents w/ Autoencoders
 
+_WARNING: you are on the master branch; please refer to examples on the branch corresponding to your `cortex version` (e.g. for version 0.19.*, run `git checkout -b 0.19` or switch to the `0.19` branch on GitHub)_
+
 This example model cleans text documents of anything that isn't text (aka noise): coffee stains, old wear artifacts, etc. You can inspect the notebook that has been used to train the model [here](trainer.ipynb).
 
 Here's a collage of input texts and predictions.
@@ -18,7 +20,7 @@ Now let's take a sample image like this one.
 
 Export the endpoint & the image's URL by running
 ```bash
-export ENDPOINT=your-api-endpoint
+export ENDPOINT=<API endpoint>
 export IMAGE_URL=https://i.imgur.com/JJLfFxB.png
 ```
 

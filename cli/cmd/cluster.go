@@ -128,7 +128,7 @@ var _upCmd = &cobra.Command{
 		clusterState, err := clusterstate.GetClusterState(awsClient, &accessConfig)
 		if err != nil {
 			if errors.GetKind(err) == clusterstate.ErrUnexpectedCloudFormationStatus {
-				fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please run `cortex cluster down` to delete the cluster, or delete the cloudformation stacks manually in your AWS console (%s)", clusterConfig.ClusterName, *clusterConfig.Region, getCloudFormationURL(*clusterConfig.Region, clusterConfig.ClusterName)))
+				fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please run `cortex cluster down` to delete the cluster, or delete the CloudFormation stacks directly from your AWS console (%s)", clusterConfig.ClusterName, *clusterConfig.Region, getCloudFormationURL(*clusterConfig.Region, clusterConfig.ClusterName)))
 			}
 			exit.Error(err)
 		}
@@ -138,37 +138,44 @@ var _upCmd = &cobra.Command{
 			exit.Error(err)
 		}
 
-		err = CreateBucketIfNotFound(awsClient, clusterConfig.Bucket)
-		if err != nil {
-			exit.Error(err)
-		}
-		err = awsClient.TagBucket(clusterConfig.Bucket, clusterConfig.Tags)
+		err = createBucketIfNotFound(awsClient, clusterConfig.Bucket, clusterConfig.Tags)
 		if err != nil {
 			exit.Error(err)
 		}
 
-		err = CreateLogGroupIfNotFound(awsClient, clusterConfig.LogGroup)
-		if err != nil {
-			exit.Error(err)
-		}
-		err = awsClient.TagLogGroup(clusterConfig.LogGroup, clusterConfig.Tags)
+		err = createLogGroupIfNotFound(awsClient, clusterConfig.LogGroup, clusterConfig.Tags)
 		if err != nil {
 			exit.Error(err)
 		}
 
-		err = createDashboard(awsClient, clusterConfig.ClusterName)
+		err = createOrClearDashboard(awsClient, clusterConfig.ClusterName)
 		if err != nil {
 			exit.Error(err)
 		}
 
-		out, exitCode, err := runManagerUpdateCommand("/root/install.sh", clusterConfig, awsCreds, _flagClusterEnv)
+		if clusterConfig.APIGatewaySetting == clusterconfig.EnabledAPIGatewaySetting {
+			err = createOrReplaceAPIGateway(awsClient, clusterConfig.ClusterName, clusterConfig.Tags)
+			if err != nil {
+				exit.Error(err)
+			}
+		}
+
+		out, exitCode, err := runManagerWithClusterConfig("/root/install.sh", clusterConfig, awsCreds, _flagClusterEnv)
 		if err != nil {
+			if clusterConfig.APIGatewaySetting == clusterconfig.EnabledAPIGatewaySetting {
+				awsClient.DeleteAPIGatewayByTag(clusterconfig.ClusterNameTag, clusterConfig.ClusterName) // best effort deletion
+				awsClient.DeleteVPCLinkByTag(clusterconfig.ClusterNameTag, clusterConfig.ClusterName)    // best effort deletion
+			}
 			exit.Error(err)
 		}
 		if exitCode == nil || *exitCode != 0 {
+			if clusterConfig.APIGatewaySetting == clusterconfig.EnabledAPIGatewaySetting {
+				awsClient.DeleteAPIGatewayByTag(clusterconfig.ClusterNameTag, clusterConfig.ClusterName) // best effort deletion
+				awsClient.DeleteVPCLinkByTag(clusterconfig.ClusterNameTag, clusterConfig.ClusterName)    // best effort deletion
+			}
 			helpStr := "\nDebugging tips (may or may not apply to this error):"
 			helpStr += fmt.Sprintf("\n* if your cluster started spinning up but was unable to provision instances, additional error information may be found in the activity history of your cluster's autoscaling groups (select each autoscaling group and click the \"Activity History\" tab): https://console.aws.amazon.com/ec2/autoscaling/home?region=%s#AutoScalingGroups:", *clusterConfig.Region)
-			helpStr += fmt.Sprintf("\n* if your cluster started spinning up, please ensure that your CloudFormation stacks for this cluster have been fully deleted before trying to spin up this cluster again: https://console.aws.amazon.com/cloudformation/home?region=%s#/stacks?filteringText=-%s-", *clusterConfig.Region, clusterConfig.ClusterName)
+			helpStr += fmt.Sprintf("\n* if your cluster started spinning up, please ensure that your CloudFormation stacks for this cluster have been fully deleted before trying to spin up this cluster again (you can delete your CloudFormation stacks from the AWS console: %s)", getCloudFormationURL(clusterConfig.ClusterName, *clusterConfig.Region))
 			fmt.Println(helpStr)
 			exit.Error(ErrorClusterUp(out + helpStr))
 		}
@@ -210,7 +217,7 @@ var _configureCmd = &cobra.Command{
 		clusterState, err := clusterstate.GetClusterState(awsClient, accessConfig)
 		if err != nil {
 			if errors.GetKind(err) == clusterstate.ErrUnexpectedCloudFormationStatus {
-				fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please run `cortex cluster down` to delete the cluster, or delete the cloudformation stacks manually in your AWS console (%s)", *accessConfig.ClusterName, *accessConfig.Region, getCloudFormationURLWithAccessConfig(accessConfig)))
+				fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please run `cortex cluster down` to delete the cluster, or delete the CloudFormation stacks directly from your AWS console (%s)", *accessConfig.ClusterName, *accessConfig.Region, getCloudFormationURLWithAccessConfig(accessConfig)))
 			}
 			exit.Error(err)
 		}
@@ -227,7 +234,7 @@ var _configureCmd = &cobra.Command{
 			exit.Error(err)
 		}
 
-		out, exitCode, err := runManagerUpdateCommand("/root/install.sh --update", clusterConfig, awsCreds, _flagClusterEnv)
+		out, exitCode, err := runManagerWithClusterConfig("/root/install.sh --update", clusterConfig, awsCreds, _flagClusterEnv)
 		if err != nil {
 			exit.Error(err)
 		}
@@ -303,7 +310,7 @@ var _downCmd = &cobra.Command{
 		clusterState, err := clusterstate.GetClusterState(awsClient, accessConfig)
 		if err != nil {
 			if errors.GetKind(err) == clusterstate.ErrUnexpectedCloudFormationStatus {
-				fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please delete the cloudformation stacks manually in your AWS console (%s)", *accessConfig.ClusterName, *accessConfig.Region, getCloudFormationURLWithAccessConfig(accessConfig)))
+				fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please delete the CloudFormation stacks directly from your AWS console: %s", *accessConfig.ClusterName, *accessConfig.Region, getCloudFormationURLWithAccessConfig(accessConfig)))
 			}
 			exit.Error(err)
 		}
@@ -319,17 +326,54 @@ var _downCmd = &cobra.Command{
 			prompt.YesOrExit(fmt.Sprintf("your cluster named \"%s\" in %s will be spun down and all apis will be deleted, are you sure you want to continue?", *accessConfig.ClusterName, *accessConfig.Region), "", "")
 		}
 
-		err = awsClient.DeleteDashboard(*accessConfig.ClusterName)
-		if err != nil {
-			exit.Error(err)
+		fmt.Print("￮ deleting api gateway ")
+		deletedAPIGateway, errAPIGateway := awsClient.DeleteAPIGatewayByTag(clusterconfig.ClusterNameTag, *accessConfig.ClusterName)
+		_, errVPCLink := awsClient.DeleteVPCLinkByTag(clusterconfig.ClusterNameTag, *accessConfig.ClusterName)
+		if errAPIGateway != nil {
+			fmt.Printf("\n\nunable to delete cortex's api gateway (see error below); if it still exists after the cluster has been deleted, please delete it via the api gateway console: https://%s.console.aws.amazon.com/apigateway/main/apis\n", *accessConfig.Region)
+			errors.PrintError(errAPIGateway)
+		}
+		if errVPCLink != nil {
+			fmt.Printf("\n\nunable to delete cortex's vpc link (see error below); if it still exists after the cluster has been deleted, please delete it via the api gateway console: https://%s.console.aws.amazon.com/apigateway/main/vpc-links\n", *accessConfig.Region)
+			errors.PrintError(errVPCLink)
+		}
+		if errAPIGateway == nil && errVPCLink == nil {
+			if deletedAPIGateway != nil {
+				fmt.Println("✓")
+			} else {
+				fmt.Println("(n/a)")
+			}
+		} else {
+			fmt.Println()
 		}
 
+		fmt.Print("￮ deleting dashboard ")
+		err = awsClient.DeleteDashboard(*accessConfig.ClusterName)
+		if err != nil {
+			fmt.Printf("\n\nunable to delete cortex's api dashboard (see error below); if it still exists after the cluster has been deleted, please delete it via the cloudwatch console: https://%s.console.aws.amazon.com/cloudwatch/home#dashboards:\n", *accessConfig.Region)
+			errors.PrintError(err)
+			fmt.Println()
+		} else {
+			fmt.Println("✓")
+		}
+
+		fmt.Print("￮ deleting sqs queues ")
+		err = awsClient.DeleteQueuesWithPrefix(clusterconfig.SQSNamePrefix(*accessConfig.ClusterName))
+		if err != nil {
+			fmt.Printf("\n\nfailed to delete all sqs queues; please delete queues starting with the name %s via the cloudwatch console: https://%s.console.aws.amazon.com/sqs/v2/home", clusterconfig.SQSNamePrefix(*accessConfig.ClusterName), *accessConfig.Region)
+			errors.PrintError(err)
+			fmt.Println()
+		} else {
+			fmt.Println("✓")
+		}
+
+		fmt.Println("￮ spinning down the cluster ...")
 		out, exitCode, err := runManagerAccessCommand("/root/uninstall.sh", *accessConfig, awsCreds, _flagClusterEnv)
 		if err != nil {
 			exit.Error(err)
 		}
 		if exitCode == nil || *exitCode != 0 {
-			helpStr := fmt.Sprintf("\nNote: if this error cannot be resolved, please ensure that all CloudFormation stacks for this cluster eventually become been fully deleted (%s). If the stack deletion process has failed, please manually delete the stack from the AWS console (this may require manually deleting particular AWS resources that are blocking the stack deletion)", getCloudFormationURLWithAccessConfig(accessConfig))
+			helpStr := fmt.Sprintf("\nNote: if this error cannot be resolved, please ensure that all CloudFormation stacks for this cluster eventually become fully deleted (%s). If the stack deletion process has failed, please delete the stacks directly from the AWS console (this may require manually deleting particular AWS resources that are blocking the stack deletion)", getCloudFormationURLWithAccessConfig(accessConfig))
 			fmt.Println(helpStr)
 			exit.Error(ErrorClusterDown(out + helpStr))
 		}
@@ -394,7 +438,7 @@ func cmdInfo(awsCreds AWSCredentials, accessConfig *clusterconfig.AccessConfig, 
 
 	clusterConfig := refreshCachedClusterConfig(awsCreds, accessConfig, disallowPrompt)
 
-	out, exitCode, err := runManagerAccessCommand("/root/info.sh", *accessConfig, awsCreds, _flagClusterEnv)
+	out, exitCode, err := runManagerWithClusterConfig("/root/info.sh", &clusterConfig, awsCreds, _flagClusterEnv)
 	if err != nil {
 		exit.Error(err)
 	}
@@ -407,8 +451,8 @@ func cmdInfo(awsCreds AWSCredentials, accessConfig *clusterconfig.AccessConfig, 
 	var operatorEndpoint string
 	for _, line := range strings.Split(out, "\n") {
 		// before modifying this, search for this prefix
-		if strings.HasPrefix(line, "operator endpoint: ") {
-			operatorEndpoint = "https://" + strings.TrimSpace(strings.TrimPrefix(line, "operator endpoint: "))
+		if strings.HasPrefix(line, "operator: ") {
+			operatorEndpoint = "https://" + strings.TrimSpace(strings.TrimPrefix(line, "operator: "))
 			break
 		}
 	}
@@ -426,14 +470,14 @@ func printInfoClusterState(awsClient *aws.Client, accessConfig *clusterconfig.Ac
 	clusterState, err := clusterstate.GetClusterState(awsClient, accessConfig)
 	if err != nil {
 		if errors.GetKind(err) == clusterstate.ErrUnexpectedCloudFormationStatus {
-			fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please run `cortex cluster down` to delete the cluster, or delete the cloudformation stacks manually in your AWS console (%s)", *accessConfig.ClusterName, *accessConfig.Region, getCloudFormationURLWithAccessConfig(accessConfig)))
+			fmt.Println(fmt.Sprintf("cluster named \"%s\" in %s is in an unexpected state; please run `cortex cluster down` to delete the cluster, or delete the CloudFormation stacks directly from your AWS console (%s)", *accessConfig.ClusterName, *accessConfig.Region, getCloudFormationURLWithAccessConfig(accessConfig)))
 		}
 		return err
 	}
 
 	fmt.Println(clusterState.TableString())
 	if clusterState.Status == clusterstate.StatusCreateFailed || clusterState.Status == clusterstate.StatusDeleteFailed {
-		fmt.Println(fmt.Sprintf("more information can be found in your AWS console %s", getCloudFormationURLWithAccessConfig(accessConfig)))
+		fmt.Println(fmt.Sprintf("more information can be found in your AWS console: %s", getCloudFormationURLWithAccessConfig(accessConfig)))
 		fmt.Println()
 	}
 
@@ -510,7 +554,7 @@ func printInfoPricing(infoResponse *schema.InfoResponse, clusterConfig clusterco
 		{Title: "cost per hour"},
 	}
 
-	rows := [][]interface{}{}
+	var rows [][]interface{}
 	rows = append(rows, []interface{}{"1 eks cluster", s.DollarsMaxPrecision(eksPrice)})
 	rows = append(rows, []interface{}{fmt.Sprintf("%d %s for your apis", numAPIInstances, s.PluralS("instance", numAPIInstances)), s.DollarsAndTenthsOfCents(totalAPIInstancePrice) + " total"})
 	rows = append(rows, []interface{}{fmt.Sprintf("%d %dgb ebs %s for your apis", numAPIInstances, clusterConfig.InstanceVolumeSize, s.PluralS("volume", numAPIInstances)), s.DollarsAndTenthsOfCents(apiEBSPrice*float64(numAPIInstances)) + " total"})
@@ -539,7 +583,7 @@ func printInfoNodes(infoResponse *schema.InfoResponse) {
 	var doesClusterHaveGPUs bool
 	for _, nodeInfo := range infoResponse.NodeInfos {
 		totalReplicas += nodeInfo.NumReplicas
-		if nodeInfo.ComputeCapacity.GPU > 0 {
+		if nodeInfo.ComputeUserCapacity.GPU > 0 {
 			doesClusterHaveGPUs = true
 		}
 	}
@@ -559,20 +603,21 @@ func printInfoNodes(infoResponse *schema.InfoResponse) {
 		{Title: "instance type"},
 		{Title: "lifecycle"},
 		{Title: "replicas"},
-		{Title: "CPU (free / total)"},
-		{Title: "memory (free / total)"},
-		{Title: "GPU (free / total)", Hidden: !doesClusterHaveGPUs},
+		{Title: "CPU (requested / total allocatable)"},
+		{Title: "memory (requested / total allocatable)"},
+		{Title: "GPU (requested / total allocatable)", Hidden: !doesClusterHaveGPUs},
 	}
 
-	rows := [][]interface{}{}
+	var rows [][]interface{}
 	for _, nodeInfo := range infoResponse.NodeInfos {
 		lifecycle := "on-demand"
 		if nodeInfo.IsSpot {
 			lifecycle = "spot"
 		}
-		cpuStr := nodeInfo.ComputeAvailable.CPU.String() + " / " + nodeInfo.ComputeCapacity.CPU.String()
-		memStr := nodeInfo.ComputeAvailable.Mem.String() + " / " + nodeInfo.ComputeCapacity.Mem.String()
-		gpuStr := s.Int64(nodeInfo.ComputeAvailable.GPU) + " / " + s.Int64(nodeInfo.ComputeCapacity.GPU)
+
+		cpuStr := nodeInfo.ComputeUserRequested.CPU.MilliString() + " / " + nodeInfo.ComputeUserCapacity.CPU.MilliString()
+		memStr := nodeInfo.ComputeUserRequested.Mem.String() + " / " + nodeInfo.ComputeUserCapacity.Mem.String()
+		gpuStr := s.Int64(nodeInfo.ComputeUserRequested.GPU) + " / " + s.Int64(nodeInfo.ComputeUserCapacity.GPU)
 		rows = append(rows, []interface{}{nodeInfo.InstanceType, lifecycle, nodeInfo.NumReplicas, cpuStr, memStr, gpuStr})
 	}
 
@@ -602,7 +647,7 @@ func updateInfoEnvironment(operatorEndpoint string, awsCreds AWSCredentials, dis
 	if prevEnv == nil {
 		shouldWriteEnv = true
 		fmt.Println()
-	} else if *prevEnv.OperatorEndpoint != operatorEndpoint || *prevEnv.AWSAccessKeyID != awsCreds.AWSAccessKeyID || *prevEnv.AWSSecretAccessKey != awsCreds.AWSSecretAccessKey {
+	} else if *prevEnv.OperatorEndpoint != operatorEndpoint || !awsCreds.ContainsCreds(*prevEnv.AWSAccessKeyID, *prevEnv.AWSSecretAccessKey) {
 		if disallowPrompt {
 			fmt.Print(fmt.Sprintf("\nfound an existing environment named \"%s\"; overwriting it to connect to this cluster\n", _flagClusterEnv))
 			shouldWriteEnv = true
@@ -652,7 +697,7 @@ func refreshCachedClusterConfig(awsCreds AWSCredentials, accessConfig *clusterco
 
 	mountedConfigPath := mountedClusterConfigPath(*accessConfig.ClusterName, *accessConfig.Region)
 
-	fmt.Println("syncing cluster configuration ..." + "\n")
+	fmt.Print("syncing cluster configuration ...\n\n")
 	out, exitCode, err := runManagerAccessCommand("/root/refresh.sh "+mountedConfigPath, *accessConfig, awsCreds, _flagClusterEnv)
 	if err != nil {
 		exit.Error(err)
@@ -693,7 +738,7 @@ func getCloudFormationURLWithAccessConfig(accessConfig *clusterconfig.AccessConf
 	return getCloudFormationURL(*accessConfig.ClusterName, *accessConfig.Region)
 }
 
-func CreateBucketIfNotFound(awsClient *aws.Client, bucket string) error {
+func createBucketIfNotFound(awsClient *aws.Client, bucket string, tags map[string]string) error {
 	bucketFound, err := awsClient.DoesBucketExist(bucket)
 	if err != nil {
 		return err
@@ -702,36 +747,62 @@ func CreateBucketIfNotFound(awsClient *aws.Client, bucket string) error {
 		fmt.Print("￮ creating a new s3 bucket: ", bucket)
 		err = awsClient.CreateBucket(bucket)
 		if err != nil {
+			fmt.Print("\n\n")
 			return err
 		}
-		fmt.Println(" ✓")
 	} else {
-		fmt.Println("￮ using existing s3 bucket:", bucket, "✓")
+		fmt.Print("￮ using existing s3 bucket:", bucket)
 	}
-	return nil
+
+	// retry since it's possible that it takes some time for the new bucket to be registered by AWS
+	for i := 0; i < 10; i++ {
+		err = awsClient.TagBucket(bucket, tags)
+		if err == nil {
+			fmt.Println(" ✓")
+			return nil
+		}
+		if !aws.IsNoSuchBucketErr(err) {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	fmt.Print("\n\n")
+	return err
 }
 
-func CreateLogGroupIfNotFound(awsClient *aws.Client, logGroup string) error {
+func createLogGroupIfNotFound(awsClient *aws.Client, logGroup string, tags map[string]string) error {
 	logGroupFound, err := awsClient.DoesLogGroupExist(logGroup)
 	if err != nil {
 		return err
 	}
 	if !logGroupFound {
 		fmt.Print("￮ creating a new cloudwatch log group: ", logGroup)
-		err = awsClient.CreateLogGroup(logGroup)
+		err = awsClient.CreateLogGroup(logGroup, tags)
 		if err != nil {
+			fmt.Print("\n\n")
 			return err
 		}
 		fmt.Println(" ✓")
-	} else {
-		fmt.Println("￮ using existing cloudwatch log group:", logGroup, "✓")
+		return nil
 	}
+
+	fmt.Print("￮ using existing cloudwatch log group: ", logGroup)
+
+	// retry since it's possible that it takes some time for the new log group to be registered by AWS
+	err = awsClient.TagLogGroup(logGroup, tags)
+	if err != nil {
+		fmt.Print("\n\n")
+		return err
+	}
+
+	fmt.Println(" ✓")
 
 	return nil
 }
 
-// createDashboard creates a new dashboard (or clears an existing one if it already exists)
-func createDashboard(awsClient *aws.Client, dashboardName string) error {
+// createOrClearDashboard creates a new dashboard (or clears an existing one if it already exists)
+func createOrClearDashboard(awsClient *aws.Client, dashboardName string) error {
 	dashboardFound, err := awsClient.DoesDashboardExist(dashboardName)
 	if err != nil {
 		return err
@@ -745,10 +816,37 @@ func createDashboard(awsClient *aws.Client, dashboardName string) error {
 
 	err = awsClient.CreateDashboard(dashboardName, consts.DashboardTitle)
 	if err != nil {
+		fmt.Print("\n\n")
 		return err
 	}
 
 	fmt.Println(" ✓")
 
+	return nil
+}
+
+// createOrReplaceAPIGateway creates an API gateway for the cluster (or clears an existing one if it already exists)
+func createOrReplaceAPIGateway(awsClient *aws.Client, clusterName string, tags map[string]string) error {
+	fmt.Print("￮ creating api gateway: ", clusterName)
+
+	_, err := awsClient.DeleteVPCLinkByTag(clusterconfig.ClusterNameTag, clusterName)
+	if err != nil {
+		fmt.Print("\n\n")
+		return errors.Append(err, fmt.Sprintf("\n\nunable to delete existing vpc link with tag %s=%s; please delete it via the api gateway console: https://%s.console.aws.amazon.com/apigateway/main/vpc-links", clusterconfig.ClusterNameTag, clusterName, awsClient.Region))
+	}
+
+	_, err = awsClient.DeleteAPIGatewayByTag(clusterconfig.ClusterNameTag, clusterName)
+	if err != nil {
+		fmt.Print("\n\n")
+		return errors.Append(err, fmt.Sprintf("\n\nunable to delete existing api gateway with tag %s=%s; please delete it via the api gateway console: https://%s.console.aws.amazon.com/apigateway/main/apis", clusterconfig.ClusterNameTag, clusterName, awsClient.Region))
+	}
+
+	_, err = awsClient.CreateAPIGateway(clusterName, tags)
+	if err != nil {
+		fmt.Print("\n\n")
+		return err
+	}
+
+	fmt.Println(" ✓")
 	return nil
 }

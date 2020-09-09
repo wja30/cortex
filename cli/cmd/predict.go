@@ -28,7 +28,6 @@ import (
 	"github.com/cortexlabs/cortex/pkg/lib/files"
 	"github.com/cortexlabs/cortex/pkg/lib/json"
 	"github.com/cortexlabs/cortex/pkg/lib/telemetry"
-	"github.com/cortexlabs/cortex/pkg/lib/urls"
 	"github.com/cortexlabs/cortex/pkg/operator/schema"
 	"github.com/cortexlabs/cortex/pkg/types"
 	"github.com/spf13/cobra"
@@ -55,7 +54,7 @@ var _predictCmd = &cobra.Command{
 		}
 		telemetry.Event("cli.predict", map[string]interface{}{"provider": env.Provider.String(), "env_name": env.Name})
 
-		err = printEnvIfNotSpecified(_flagPredictEnv)
+		err = printEnvIfNotSpecified(_flagPredictEnv, cmd)
 		if err != nil {
 			exit.Error(err)
 		}
@@ -64,28 +63,30 @@ var _predictCmd = &cobra.Command{
 		jsonPath := args[1]
 
 		var apiRes schema.GetAPIResponse
-		var apiEndpoint string
 		if env.Provider == types.AWSProviderType {
 			apiRes, err = cluster.GetAPI(MustGetOperatorConfig(env.Name), apiName)
 			if err != nil {
 				exit.Error(err)
 			}
-			apiEndpoint = urls.Join(apiRes.BaseURL, *apiRes.API.Endpoint)
-
 		} else {
 			apiRes, err = local.GetAPI(apiName)
 			if err != nil {
 				exit.Error(err)
 			}
-			apiEndpoint = apiRes.BaseURL
 		}
 
-		totalReady := apiRes.Status.Updated.Ready + apiRes.Status.Stale.Ready
+		if apiRes.RealtimeAPI == nil {
+			exit.Error(errors.ErrorUnexpected("unable to get api", apiName)) // unexpected
+		}
+
+		realtimeAPI := apiRes.RealtimeAPI
+
+		totalReady := realtimeAPI.Status.Updated.Ready + realtimeAPI.Status.Stale.Ready
 		if totalReady == 0 {
-			exit.Error(ErrorAPINotReady(apiName, apiRes.Status.Message()))
+			exit.Error(ErrorAPINotReady(apiName, realtimeAPI.Status.Message()))
 		}
 
-		predictResponse, err := makePredictRequest(apiEndpoint, jsonPath)
+		predictResponse, err := makePredictRequest(realtimeAPI.Endpoint, jsonPath)
 		if err != nil {
 			exit.Error(err)
 		}

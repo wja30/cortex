@@ -7,7 +7,7 @@ _WARNING: you are on the master branch, please refer to the docs on the branch t
 Cortex looks for a file named `dependencies.sh` in the top level Cortex project directory (i.e. the directory which contains `cortex.yaml`). For example:
 
 ```text
-./iris-classifier/
+./my-classifier/
 ├── cortex.yaml
 ├── predictor.py
 ├── ...
@@ -48,16 +48,17 @@ mkdir my-api && cd my-api && touch Dockerfile
 
 Cortex's base Docker images are listed below. Depending on the Cortex Predictor and compute type specified in your API configuration, choose one of these images to use as the base for your Docker image:
 
-<!-- CORTEX_VERSION_BRANCH_STABLE x5 -->
+<!-- CORTEX_VERSION_BRANCH_STABLE x6 -->
 * Python Predictor (CPU): `cortexlabs/python-predictor-cpu-slim:master`
-* Python Predictor (GPU): `cortexlabs/python-predictor-gpu-slim:master`
-* TensorFlow Predictor (CPU and GPU): `cortexlabs/tensorflow-predictor-slim:master`
+* Python Predictor (GPU): `cortexlabs/python-predictor-gpu-slim:master-cuda10.1` (also available in cuda10.0, cuda10.2, and cuda11.0)
+* Python Predictor (Inferentia): `cortexlabs/python-predictor-inf-slim:master`
+* TensorFlow Predictor (CPU, GPU, Inferentia): `cortexlabs/tensorflow-predictor-slim:master`
 * ONNX Predictor (CPU): `cortexlabs/onnx-predictor-cpu-slim:master`
 * ONNX Predictor (GPU): `cortexlabs/onnx-predictor-gpu-slim:master`
 
 Note: the images listed above use the `-slim` suffix; Cortex's default API images are not `-slim`, since they have additional dependencies installed to cover common use cases. If you are building your own Docker image, starting with a `-slim` Predictor image will result in a smaller image size.
 
-The sample Dockerfile below inherits from Cortex's Python CPU serving image and installs the `tree` system package.
+The sample Dockerfile below inherits from Cortex's Python CPU serving image, and installs 3 packages. `tree` is a system package and `pandas` and `rdkit` are Python packages.
 
 <!-- CORTEX_VERSION_BRANCH_STABLE -->
 ```dockerfile
@@ -68,6 +69,10 @@ FROM cortexlabs/python-predictor-cpu-slim:master
 RUN apt-get update \
     && apt-get install -y tree \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir pandas \
+    && conda install -y conda-forge::rdkit \
+    && conda clean -a
 ```
 
 ### Build and push to a container registry

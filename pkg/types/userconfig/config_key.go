@@ -19,18 +19,26 @@ package userconfig
 const (
 	// API
 	NameKey           = "name"
-	EndpointKey       = "endpoint"
-	LocalPortKey      = "local_port"
+	KindKey           = "kind"
 	PredictorKey      = "predictor"
 	MonitoringKey     = "monitoring"
+	NetworkingKey     = "networking"
 	ComputeKey        = "compute"
 	AutoscalingKey    = "autoscaling"
 	UpdateStrategyKey = "update_strategy"
 
+	// TrafficSplitter
+	APIsKey   = "apis"
+	WeightKey = "weight"
+
 	// Predictor
 	TypeKey                   = "type"
 	PathKey                   = "path"
-	ModelKey                  = "model"
+	ModelPathKey              = "model_path"
+	ServerSideBatchingKey     = "server_side_batching"
+	ProcessesPerReplicaKey    = "processes_per_replica"
+	ThreadsPerProcessKey      = "threads_per_process"
+	ModelsKey                 = "models"
 	PythonPathKey             = "python_path"
 	ImageKey                  = "image"
 	TensorFlowServingImageKey = "tensorflow_serving_image"
@@ -38,21 +46,32 @@ const (
 	EnvKey                    = "env"
 	SignatureKeyKey           = "signature_key"
 
+	// ServerSideBatching
+	MaxBatchSizeKey  = "max_batch_size"
+	BatchIntervalKey = "batch_interval"
+
+	// ModelResource
+	ModelsNameKey = "name"
+
 	// Monitoring
 	KeyKey       = "key"
 	ModelTypeKey = "model_type"
+
+	// Networking
+	APIGatewayKey = "api_gateway"
+	EndpointKey   = "endpoint"
+	LocalPortKey  = "local_port"
 
 	// Compute
 	CPUKey = "cpu"
 	MemKey = "mem"
 	GPUKey = "gpu"
+	InfKey = "inf"
 
 	// Autoscaling
 	MinReplicasKey                  = "min_replicas"
 	MaxReplicasKey                  = "max_replicas"
 	InitReplicasKey                 = "init_replicas"
-	WorkersPerReplicaKey            = "workers_per_replica"
-	ThreadsPerWorkerKey             = "threads_per_worker"
 	TargetReplicaConcurrencyKey     = "target_replica_concurrency"
 	MaxReplicaConcurrencyKey        = "max_replica_concurrency"
 	WindowKey                       = "window"
@@ -68,10 +87,12 @@ const (
 	MaxUnavailableKey = "max_unavailable"
 
 	// K8s annotation
+	EndpointAnnotationKey                     = "networking.cortex.dev/endpoint"
+	APIGatewayAnnotationKey                   = "networking.cortex.dev/api-gateway"
+	ProcessesPerReplicaAnnotationKey          = "predictor.cortex.dev/processes-per-replica"
+	ThreadsPerProcessAnnotationKey            = "predictor.cortex.dev/threads-per-process"
 	MinReplicasAnnotationKey                  = "autoscaling.cortex.dev/min-replicas"
 	MaxReplicasAnnotationKey                  = "autoscaling.cortex.dev/max-replicas"
-	WorkersPerReplicaAnnotationKey            = "autoscaling.cortex.dev/workers-per-replica"
-	ThreadsPerWorkerAnnotationKey             = "autoscaling.cortex.dev/threads-per-worker"
 	TargetReplicaConcurrencyAnnotationKey     = "autoscaling.cortex.dev/target-replica-concurrency"
 	MaxReplicaConcurrencyAnnotationKey        = "autoscaling.cortex.dev/max-replica-concurrency"
 	WindowAnnotationKey                       = "autoscaling.cortex.dev/window"

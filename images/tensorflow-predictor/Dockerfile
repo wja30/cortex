@@ -14,7 +14,7 @@ RUN apt-get update -qq && apt-get install -y -q \
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8 LANGUAGE=en_US.en LC_ALL=en_US.UTF-8
 
-ENV PYTHONPATH="${PYTHONPATH}:/src:/mnt/project"
+ENV PYTHONPATH="${PYTHONPATH}:/src"
 ENV PATH=/opt/conda/bin:$PATH
 ENV PYTHONVERSION=3.6.9
 
@@ -33,15 +33,13 @@ RUN /opt/conda/bin/conda create -n env -c conda-forge python=$PYTHONVERSION pip 
     echo "source ~/.env" >> ~/.bashrc
 
 ENV BASH_ENV=~/.env
+SHELL ["/bin/bash", "-c"]
 
 COPY pkg/workloads/cortex/serve/requirements.txt /src/cortex/serve/requirements.txt
-
-# use /bin/bash to run in conda environment
-RUN /bin/bash -c \
-    "pip install --no-cache-dir \
-        -r /src/cortex/serve/requirements.txt \
-        tensorflow-cpu==2.1.0 \
-        tensorflow-serving-api==2.1.0"
+RUN pip install --no-cache-dir -r \
+    /src/cortex/serve/requirements.txt \
+    tensorflow-cpu==2.1.0 \
+    tensorflow-serving-api==2.1.0
 
 ARG SLIM="false"
 RUN test "${SLIM}" = "true" || ( \
@@ -55,10 +53,9 @@ RUN test "${SLIM}" = "true" || ( \
             libpng-dev \
             libsndfile1 \
         && apt-get clean -qq && rm -rf /var/lib/apt/lists/* \
-        && /bin/bash -c \
-            "pip install --no-cache-dir \
-                opencv-python==4.2.0.34 \
-                tensorflow-hub==0.8.0" \
+        && pip install --no-cache-dir \
+            opencv-python==4.2.0.34 \
+            tensorflow-hub==0.8.0 \
     )
 
 COPY pkg/workloads/cortex/consts.py /src/cortex/

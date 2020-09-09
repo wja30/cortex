@@ -21,19 +21,13 @@ import (
 
 	"github.com/cortexlabs/cortex/pkg/lib/errors"
 	"github.com/cortexlabs/cortex/pkg/lib/files"
-	"github.com/cortexlabs/cortex/pkg/lib/hash"
-	"github.com/cortexlabs/cortex/pkg/lib/zip"
-	"github.com/cortexlabs/cortex/pkg/operator/config"
-	"github.com/cortexlabs/cortex/pkg/operator/operator"
-	"github.com/cortexlabs/cortex/pkg/operator/schema"
-	"github.com/cortexlabs/cortex/pkg/types"
-	"github.com/cortexlabs/cortex/pkg/types/spec"
+	"github.com/cortexlabs/cortex/pkg/operator/resources"
 )
 
 func Deploy(w http.ResponseWriter, r *http.Request) {
 	force := getOptionalBoolQParam("force", false, r)
 
-	configPath, err := getRequiredQueryParam("configPath", r)
+	configFileName, err := getRequiredQueryParam("configFileName", r)
 	if err != nil {
 		respondError(w, r, errors.WithStack(err))
 		return
@@ -48,66 +42,17 @@ func Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	baseURL, err := operator.APIsBaseURL()
-	if err != nil {
-		respondError(w, r, err)
-		return
-	}
-
 	projectBytes, err := files.ReadReqFile(r, "project.zip")
 	if err != nil {
 		respondError(w, r, err)
 		return
 	}
-	projectID := hash.Bytes(projectBytes)
-	projectKey := spec.ProjectKey(projectID)
-	projectFileMap, err := zip.UnzipMemToMem(projectBytes)
+
+	response, err := resources.Deploy(projectBytes, configFileName, configBytes, force)
 	if err != nil {
 		respondError(w, r, err)
 		return
 	}
 
-	projectFiles := operator.ProjectFiles{
-		ProjectByteMap: projectFileMap,
-		ConfigFilePath: configPath,
-	}
-	apiConfigs, err := spec.ExtractAPIConfigs(configBytes, types.AWSProviderType, projectFiles, configPath)
-	if err != nil {
-		respondError(w, r, err)
-		return
-	}
-
-	err = operator.ValidateClusterAPIs(apiConfigs, projectFiles)
-	if err != nil {
-		respondError(w, r, err)
-		return
-	}
-
-	isProjectUploaded, err := config.AWS.IsS3File(config.Cluster.Bucket, projectKey)
-	if err != nil {
-		respondError(w, r, err)
-		return
-	}
-	if !isProjectUploaded {
-		if err = config.AWS.UploadBytesToS3(projectBytes, config.Cluster.Bucket, projectKey); err != nil {
-			respondError(w, r, err)
-			return
-		}
-	}
-
-	results := make([]schema.DeployResult, len(apiConfigs))
-	for i, apiConfig := range apiConfigs {
-		api, msg, err := operator.UpdateAPI(&apiConfig, projectID, force)
-		results[i].Message = msg
-		if err != nil {
-			results[i].Error = errors.Message(err)
-		} else {
-			results[i].API = *api
-		}
-	}
-
-	respond(w, schema.DeployResponse{
-		Results: results,
-		BaseURL: baseURL,
-	})
+	respond(w, response)
 }

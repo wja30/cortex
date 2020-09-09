@@ -19,7 +19,6 @@ package cmd
 import (
 	"fmt"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/cortexlabs/cortex/cli/cluster"
@@ -36,6 +35,7 @@ import (
 	"github.com/cortexlabs/cortex/pkg/lib/zip"
 	"github.com/cortexlabs/cortex/pkg/operator/schema"
 	"github.com/cortexlabs/cortex/pkg/types"
+	"github.com/cortexlabs/cortex/pkg/types/userconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -43,6 +43,10 @@ var (
 	_warningFileBytes    = 1024 * 1024 * 10
 	_warningProjectBytes = 1024 * 1024 * 10
 	_warningFileCount    = 1000
+
+	_maxFileSizeBytes      int64   = 1024 * 1024 * 512
+	_maxProjectSizeBytes   int64   = 1024 * 1024 * 512
+	_maxMemoryUsagePercent float64 = 0.9
 
 	_flagDeployEnv            string
 	_flagDeployForce          bool
@@ -68,12 +72,21 @@ var _deployCmd = &cobra.Command{
 		}
 		telemetry.Event("cli.deploy", map[string]interface{}{"provider": env.Provider.String(), "env_name": env.Name})
 
-		err = printEnvIfNotSpecified(_flagDeployEnv)
+		err = printEnvIfNotSpecified(_flagDeployEnv, cmd)
 		if err != nil {
 			exit.Error(err)
 		}
 
 		configPath := getConfigPath(args)
+
+		projectRoot := files.Dir(configPath)
+		if projectRoot == _homeDir {
+			exit.Error(ErrorDeployFromTopLevelDir("home", env.Provider))
+		}
+		if projectRoot == "/" {
+			exit.Error(ErrorDeployFromTopLevelDir("root", env.Provider))
+		}
+
 		var deployResponse schema.DeployResponse
 		if env.Provider == types.AWSProviderType {
 			deploymentBytes, err := getDeploymentBytes(env.Provider, configPath)
@@ -91,8 +104,7 @@ var _deployCmd = &cobra.Command{
 				exit.Error(err)
 			}
 
-			absoluteConfigPath := files.RelToAbsPath(configPath, _cwd)
-			deployResponse, err = local.Deploy(env, absoluteConfigPath, projectFiles)
+			deployResponse, err = local.Deploy(env, configPath, projectFiles, _flagDeployDisallowPrompt)
 			if err != nil {
 				exit.Error(err)
 			}
@@ -102,6 +114,7 @@ var _deployCmd = &cobra.Command{
 	},
 }
 
+// Returns absolute path
 func getConfigPath(args []string) string {
 	var configPath string
 
@@ -117,14 +130,14 @@ func getConfigPath(args []string) string {
 		}
 	}
 
-	return configPath
+	return files.RelToAbsPath(configPath, _cwd)
 }
 
 func findProjectFiles(provider types.ProviderType, configPath string) ([]string, error) {
-	projectRoot := filepath.Dir(files.UserRelToAbsPath(configPath))
+	projectRoot := files.Dir(configPath)
 
 	ignoreFns := []files.IgnoreFn{
-		files.IgnoreSpecificFiles(files.UserRelToAbsPath(configPath)),
+		files.IgnoreSpecificFiles(configPath),
 		files.IgnoreCortexDebug,
 		files.IgnoreHiddenFiles,
 		files.IgnoreHiddenFolders,
@@ -140,13 +153,25 @@ func findProjectFiles(provider types.ProviderType, configPath string) ([]string,
 		ignoreFns = append(ignoreFns, cortexIgnore)
 	}
 
-	if !_flagDeployDisallowPrompt && provider != types.LocalProviderType {
-		ignoreFns = append(ignoreFns, files.PromptForFilesAboveSize(_warningFileBytes, "do you want to upload %s (%s)?"))
+	if provider != types.LocalProviderType {
+		if !_flagDeployDisallowPrompt {
+			ignoreFns = append(ignoreFns, files.PromptForFilesAboveSize(_warningFileBytes, "do you want to upload %s (%s)?"))
+		}
+		ignoreFns = append(ignoreFns,
+			files.ErrorOnBigFilesFn(_maxFileSizeBytes, _maxMemoryUsagePercent),
+			// must be the last appended IgnoreFn
+			files.ErrorOnProjectSizeLimit(_maxProjectSizeBytes),
+		)
 	}
 
 	projectPaths, err := files.ListDirRecursive(projectRoot, false, ignoreFns...)
 	if err != nil {
 		return nil, err
+	}
+
+	dotEnvPath := path.Join(projectRoot, ".env")
+	if files.IsFile(dotEnvPath) {
+		projectPaths = append(projectPaths, dotEnvPath)
 	}
 
 	return projectPaths, nil
@@ -162,7 +187,7 @@ func getDeploymentBytes(provider types.ProviderType, configPath string) (map[str
 		"config": configBytes,
 	}
 
-	projectRoot := filepath.Dir(files.UserRelToAbsPath(configPath))
+	projectRoot := files.Dir(configPath)
 
 	projectPaths, err := findProjectFiles(provider, configPath)
 	if err != nil {
@@ -171,7 +196,7 @@ func getDeploymentBytes(provider types.ProviderType, configPath string) (map[str
 
 	canSkipPromptMsg := "you can skip this prompt next time with `cortex deploy --yes`\n"
 	rootDirMsg := "this directory"
-	if s.EnsureSuffix(projectRoot, "/") != _cwd {
+	if projectRoot != _cwd {
 		rootDirMsg = fmt.Sprintf("./%s", files.DirPathRelativeToCWD(projectRoot))
 	}
 
@@ -256,7 +281,13 @@ func getAPICommandsMessage(results []schema.DeployResult, envName string) string
 	var items table.KeyValuePairs
 	items.Add("cortex get"+envArg, "(show api statuses)")
 	items.Add(fmt.Sprintf("cortex get %s%s", apiName, envArg), "(show api info)")
-	items.Add(fmt.Sprintf("cortex logs %s%s", apiName, envArg), "(stream api logs)")
+
+	for _, result := range results {
+		if result.API.Kind == userconfig.RealtimeAPIKind {
+			items.Add(fmt.Sprintf("cortex logs %s%s", apiName, envArg), "(stream api logs)")
+			break
+		}
+	}
 
 	return strings.TrimSpace(items.String(&table.KeyValuePairOpts{
 		Delimiter: pointer.String(""),

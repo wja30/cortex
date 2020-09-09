@@ -22,6 +22,7 @@ const (
 	Unknown Code = iota
 	Stalled
 	Error
+	ErrorImagePull
 	OOM
 	Live
 	Updating
@@ -31,6 +32,7 @@ var _codes = []string{
 	"status_unknown",
 	"status_stalled",
 	"status_error",
+	"status_error_image_pull",
 	"status_oom",
 	"status_live",
 	"status_updating",
@@ -42,6 +44,7 @@ var _codeMessages = []string{
 	"unknown",               // Unknown
 	"compute unavailable",   // Stalled
 	"error",                 // Error
+	"error (image pull)",    // Live
 	"error (out of memory)", // OOM
 	"live",                  // Live
 	"updating",              // Updating
@@ -61,4 +64,34 @@ func (code Code) Message() string {
 		return _codeMessages[Unknown]
 	}
 	return _codeMessages[code]
+}
+
+// MarshalText satisfies TextMarshaler
+func (code Code) MarshalText() ([]byte, error) {
+	return []byte(code.String()), nil
+}
+
+// UnmarshalText satisfies TextUnmarshaler
+func (code *Code) UnmarshalText(text []byte) error {
+	enum := string(text)
+	for i := 0; i < len(_codes); i++ {
+		if enum == _codes[i] {
+			*code = Code(i)
+			return nil
+		}
+	}
+
+	*code = Unknown
+	return nil
+}
+
+// UnmarshalBinary satisfies BinaryUnmarshaler
+// Needed for msgpack
+func (code *Code) UnmarshalBinary(data []byte) error {
+	return code.UnmarshalText(data)
+}
+
+// MarshalBinary satisfies BinaryMarshaler
+func (code Code) MarshalBinary() ([]byte, error) {
+	return []byte(code.String()), nil
 }

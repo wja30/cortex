@@ -12,6 +12,8 @@ Unless your internet connection is very fast or you will only be working on the 
 4. kubectl
 5. aws-cli
 
+Also, please use the VS Code [yaml extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml) and enable auto-formatting for YAML files.
+
 ### Go
 
 To install Go on linux, run:
@@ -147,6 +149,8 @@ image_downloader: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/downloader
 image_request_monitor: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/request-monitor:latest
 image_cluster_autoscaler: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/cluster-autoscaler:latest
 image_metrics_server: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/metrics-server:latest
+image_inferentia: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/inferentia:latest
+image_neuron_rtd: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/neuron-rtd:latest
 image_nvidia: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/nvidia:latest
 image_fluentd: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/fluentd:latest
 image_statsd: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/statsd:latest
@@ -203,35 +207,7 @@ make cluster-down
 ### Deploy an example
 
 ```bash
-cd examples/pytorch/iris-classifier
-```
-
-Take note of the following images:
-```
-# for Python Predictor
-XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/python-predictor-cpu:latest
-XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/python-predictor-gpu:latest
-
-# for TensorFlow Predictor
-XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/tensorflow-serving-cpu:latest
-XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/tensorflow-serving-gpu:latest
-XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/tensorflow-predictor:latest
-
-# for ONNX Predictor
-XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/onnx-predictor-cpu:latest
-XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/onnx-predictor-gpu:latest
-```
-
-Edit `cortex.yaml` and override `image`/`tensorflow_serving_image` with the appropriate image(s) for the given predictor type:
-```yaml
-# cortex.yaml
-
-- name: my-api
-  ...
-  predictor:
-    type: python
-    image: XXXXXXXX.dkr.ecr.us-west-2.amazonaws.com/cortexlabs/python-predictor-cpu:latest
-  ...
+cortex deploy examples/pytorch/iris-classifier --env aws
 ```
 
 ## Off-cluster operator

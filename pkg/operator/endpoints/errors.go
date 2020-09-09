@@ -21,6 +21,7 @@ import (
 
 	"github.com/cortexlabs/cortex/pkg/lib/errors"
 	s "github.com/cortexlabs/cortex/pkg/lib/strings"
+	"github.com/cortexlabs/cortex/pkg/operator/operator"
 )
 
 const (
@@ -35,6 +36,7 @@ const (
 	ErrPathParamRequired      = "endpoints.path_param_required"
 	ErrAnyQueryParamRequired  = "endpoints.any_query_param_required"
 	ErrAnyPathParamRequired   = "endpoints.any_path_param_required"
+	ErrLogsJobIDRequired      = "endpoints.logs_job_id_required"
 )
 
 func ErrorAPIVersionMismatch(operatorVersion string, clientVersion string) error {
@@ -75,7 +77,7 @@ func ErrorAuthInvalid() error {
 func ErrorAuthOtherAccount() error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrAuthOtherAccount,
-		Message: "AWS account associated with CLI AWS credentials differs from account associated with cluster AWS credentials; run `cortex env configure` to configure your environment with credentials for any IAM user in the same AWS account as your cluster",
+		Message: "the AWS account associated with your CLI's AWS credentials differs from the AWS account associated with your cluster's AWS credentials; run `cortex env configure` to configure your environment with credentials for any IAM user in the same AWS account as your cluster",
 	})
 }
 
@@ -100,7 +102,7 @@ func ErrorPathParamRequired(param string) error {
 }
 
 func ErrorAnyQueryParamRequired(param string, params ...string) error {
-	allParams := append(params, param)
+	allParams := append([]string{param}, params...)
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrAnyQueryParamRequired,
 		Message: fmt.Sprintf("query params required: %s", s.UserStrsOr(allParams)),
@@ -108,9 +110,16 @@ func ErrorAnyQueryParamRequired(param string, params ...string) error {
 }
 
 func ErrorAnyPathParamRequired(param string, params ...string) error {
-	allParams := append(params, param)
+	allParams := append([]string{param}, params...)
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrAnyPathParamRequired,
 		Message: fmt.Sprintf("path params required: %s", s.UserStrsOr(allParams)),
+	})
+}
+
+func ErrorLogsJobIDRequired(resource operator.DeployedResource) error {
+	return errors.WithStack(&errors.Error{
+		Kind:    ErrLogsJobIDRequired,
+		Message: fmt.Sprintf("job id is required to stream logs for %s; you can get a list of latest job ids with `cortex get %s` and use `cortex logs %s JOB_ID` to stream logs for a job", resource.UserString(), resource.Name, resource.Name),
 	})
 }

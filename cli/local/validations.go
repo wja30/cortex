@@ -33,6 +33,7 @@ import (
 	"github.com/cortexlabs/cortex/pkg/lib/pointer"
 	"github.com/cortexlabs/cortex/pkg/lib/regex"
 	"github.com/cortexlabs/cortex/pkg/lib/sets/strset"
+	"github.com/cortexlabs/cortex/pkg/lib/slices"
 	s "github.com/cortexlabs/cortex/pkg/lib/strings"
 	"github.com/cortexlabs/cortex/pkg/types"
 	"github.com/cortexlabs/cortex/pkg/types/spec"
@@ -42,38 +43,41 @@ import (
 var _startingPort = 8888
 
 type ProjectFiles struct {
-	projectFileList []string // make sure it is absolute paths
-	configFilePath  string
+	relFilePaths []string
+	projectRoot  string
 }
 
-func NewProjectFiles(projectFileList []string, absoluteConfigFilePath string) (ProjectFiles, error) {
-	if !filepath.IsAbs(absoluteConfigFilePath) {
-		return ProjectFiles{}, ErrorNotAbsolutePath(absoluteConfigFilePath) // unexpected
+func newProjectFiles(projectFileList []string, configPath string) (ProjectFiles, error) {
+	if !files.IsAbsOrTildePrefixed(configPath) {
+		return ProjectFiles{}, errors.ErrorUnexpected(fmt.Sprintf("%s is not an absolute path", configPath))
 	}
+	projectRoot := files.Dir(configPath)
 
-	for _, projectFile := range projectFileList {
-		if !filepath.IsAbs(projectFile) {
-			return ProjectFiles{}, ErrorNotAbsolutePath(absoluteConfigFilePath) // unexpected
+	relFilePaths := make([]string, len(projectFileList))
+	for i, projectFilePath := range projectFileList {
+		if !files.IsAbsOrTildePrefixed(projectFilePath) {
+			return ProjectFiles{}, errors.ErrorUnexpected(fmt.Sprintf("%s is not an absolute path", projectFilePath))
 		}
+		if !strings.HasPrefix(projectFilePath, projectRoot) {
+			return ProjectFiles{}, errors.ErrorUnexpected(fmt.Sprintf("%s is not located within in the project", projectFilePath))
+		}
+		relFilePaths[i] = strings.TrimPrefix(projectFilePath, projectRoot)
 	}
 
 	return ProjectFiles{
-		projectFileList: projectFileList,
-		configFilePath:  absoluteConfigFilePath,
+		relFilePaths: relFilePaths,
+		projectRoot:  projectRoot,
 	}, nil
 }
 
-func (projectFiles ProjectFiles) GetAllPaths() []string {
-	return projectFiles.projectFileList
+func (projectFiles ProjectFiles) AllPaths() []string {
+	return projectFiles.relFilePaths
 }
 
-func (projectFiles ProjectFiles) GetFile(fileName string) ([]byte, error) {
-	baseDir := filepath.Dir(projectFiles.configFilePath)
-
-	absPath := files.RelToAbsPath(fileName, baseDir)
-	for _, path := range projectFiles.projectFileList {
-		if path == absPath {
-			bytes, err := files.ReadFileBytes(absPath)
+func (projectFiles ProjectFiles) GetFile(path string) ([]byte, error) {
+	for _, projectFilePath := range projectFiles.relFilePaths {
+		if path == projectFilePath {
+			bytes, err := files.ReadFileBytes(filepath.Join(projectFiles.projectRoot, path))
 			if err != nil {
 				return nil, err
 			}
@@ -81,11 +85,26 @@ func (projectFiles ProjectFiles) GetFile(fileName string) ([]byte, error) {
 		}
 	}
 
-	return nil, files.ErrorFileDoesNotExist(fileName)
+	return nil, files.ErrorFileDoesNotExist(path)
 }
 
-func (projectFiles ProjectFiles) GetConfigFilePath() string {
-	return projectFiles.configFilePath
+func (projectFiles ProjectFiles) HasFile(path string) bool {
+	return slices.HasString(projectFiles.relFilePaths, path)
+}
+
+func (projectFiles ProjectFiles) HasDir(path string) bool {
+	path = s.EnsureSuffix(path, "/")
+	for _, projectFilePath := range projectFiles.relFilePaths {
+		if strings.HasPrefix(projectFilePath, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// Get the absolute path to the project directory
+func (projectFiles ProjectFiles) ProjectDir() string {
+	return projectFiles.projectRoot
 }
 
 func ValidateLocalAPIs(apis []userconfig.API, projectFiles ProjectFiles, awsClient *aws.Client) error {
@@ -103,7 +122,7 @@ func ValidateLocalAPIs(apis []userconfig.API, projectFiles ProjectFiles, awsClie
 		api := &apis[i]
 
 		if err := spec.ValidateAPI(api, projectFiles, types.LocalProviderType, awsClient); err != nil {
-			return err
+			return errors.Wrap(err, api.Identify())
 		}
 
 		if api.Compute.CPU != nil && (api.Compute.CPU.MilliValue() > int64(dockerClient.Info.NCPU)*1000) {
@@ -199,35 +218,35 @@ func ValidateLocalAPIs(apis []userconfig.API, projectFiles ProjectFiles, awsClie
 	for i := range apis {
 		api := &apis[i]
 
-		updatingAPIToPortMap[api.Name] = api.LocalPort
-		if api.LocalPort != nil {
-			if collidingAPIName, ok := portToUpdatingAPIMap[*api.LocalPort]; ok {
-				return errors.Wrap(ErrorDuplicateLocalPort(collidingAPIName), api.Identify(), userconfig.LocalPortKey, s.Int(*api.LocalPort))
+		updatingAPIToPortMap[api.Name] = api.Networking.LocalPort
+		if api.Networking.LocalPort != nil {
+			if collidingAPIName, ok := portToUpdatingAPIMap[*api.Networking.LocalPort]; ok {
+				return errors.Wrap(ErrorDuplicateLocalPort(collidingAPIName), api.Identify(), userconfig.LocalPortKey, s.Int(*api.Networking.LocalPort))
 			}
-			usedPorts = append(usedPorts, *api.LocalPort)
-			portToUpdatingAPIMap[*api.LocalPort] = api.Name
+			usedPorts = append(usedPorts, *api.Networking.LocalPort)
+			portToUpdatingAPIMap[*api.Networking.LocalPort] = api.Name
 		}
 	}
 
 	for i := range apis {
 		api := &apis[i]
-		if api.LocalPort != nil {
+		if api.Networking.LocalPort != nil {
 			// same port as previous deployment of this API
-			if *api.LocalPort == runningAPIsToPortMap[api.Name] {
+			if *api.Networking.LocalPort == runningAPIsToPortMap[api.Name] {
 				continue
 			}
 
 			// port is being used by another API
-			if apiName, ok := portToRunningAPIsMap[*api.LocalPort]; ok {
-				return errors.Wrap(ErrorDuplicateLocalPort(apiName), api.Identify(), userconfig.LocalPortKey, s.Int(*api.LocalPort))
+			if apiName, ok := portToRunningAPIsMap[*api.Networking.LocalPort]; ok {
+				return errors.Wrap(ErrorDuplicateLocalPort(apiName), api.Identify(), userconfig.LocalPortKey, s.Int(*api.Networking.LocalPort))
 			}
-			isPortAvailable, err := checkPortAvailability(*api.LocalPort)
+			isPortAvailable, err := checkPortAvailability(*api.Networking.LocalPort)
 			if err != nil {
 				return err
 			}
 
 			if !isPortAvailable {
-				return errors.Wrap(ErrorPortAlreadyInUse(*api.LocalPort), api.Identify(), userconfig.LocalPortKey)
+				return errors.Wrap(ErrorPortAlreadyInUse(*api.Networking.LocalPort), api.Identify(), userconfig.LocalPortKey)
 			}
 		} else {
 			// get previous api deployment port
@@ -235,7 +254,7 @@ func ValidateLocalAPIs(apis []userconfig.API, projectFiles ProjectFiles, awsClie
 
 				// check that the previous api deployment port has not been claimed in new deployment
 				if _, ok := portToUpdatingAPIMap[port]; !ok {
-					api.LocalPort = pointer.Int(port)
+					api.Networking.LocalPort = pointer.Int(port)
 				}
 			}
 		}
@@ -243,13 +262,13 @@ func ValidateLocalAPIs(apis []userconfig.API, projectFiles ProjectFiles, awsClie
 
 	for i := range apis {
 		api := &apis[i]
-		if api.LocalPort == nil {
+		if api.Networking.LocalPort == nil {
 			availablePort, err := findTheNextAvailablePort(usedPorts)
 			if err != nil {
 				errors.Wrap(err, api.Identify())
 			}
 
-			api.LocalPort = pointer.Int(availablePort)
+			api.Networking.LocalPort = pointer.Int(availablePort)
 		}
 	}
 

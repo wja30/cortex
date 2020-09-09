@@ -19,11 +19,18 @@ package main
 import (
 	"log"
 	"net/http"
+	"time"
 
+	"github.com/cortexlabs/cortex/pkg/lib/cron"
+	"github.com/cortexlabs/cortex/pkg/lib/errors"
 	"github.com/cortexlabs/cortex/pkg/lib/exit"
+	"github.com/cortexlabs/cortex/pkg/lib/telemetry"
 	"github.com/cortexlabs/cortex/pkg/operator/config"
 	"github.com/cortexlabs/cortex/pkg/operator/endpoints"
 	"github.com/cortexlabs/cortex/pkg/operator/operator"
+	"github.com/cortexlabs/cortex/pkg/operator/resources/batchapi"
+	"github.com/cortexlabs/cortex/pkg/operator/resources/realtimeapi"
+	"github.com/cortexlabs/cortex/pkg/types/userconfig"
 	"github.com/gorilla/mux"
 )
 
@@ -34,15 +41,39 @@ func main() {
 		exit.Error(err)
 	}
 
-	if err := operator.Init(); err != nil {
-		exit.Error(err)
+	telemetry.Event("operator.init")
+
+	_, err := operator.UpdateMemoryCapacityConfigMap()
+	if err != nil {
+		exit.Error(errors.Wrap(err, "init"))
 	}
+
+	deployments, err := config.K8s.ListDeploymentsWithLabelKeys("apiName")
+	if err != nil {
+		exit.Error(errors.Wrap(err, "init"))
+	}
+
+	for _, deployment := range deployments {
+		if userconfig.KindFromString(deployment.Labels["apiKind"]) == userconfig.RealtimeAPIKind {
+			if err := realtimeapi.UpdateAutoscalerCron(&deployment); err != nil {
+				exit.Error(errors.Wrap(err, "init"))
+			}
+		}
+	}
+
+	cron.Run(operator.DeleteEvictedPods, operator.ErrorHandler("delete evicted pods"), 12*time.Hour)
+	cron.Run(operator.InstanceTelemetry, operator.ErrorHandler("instance telemetry"), 1*time.Hour)
+	cron.Run(batchapi.ManageJobResources, operator.ErrorHandler("manage jobs"), batchapi.ManageJobResourcesCronPeriod)
 
 	router := mux.NewRouter()
 
 	routerWithoutAuth := router.NewRoute().Subrouter()
 	routerWithoutAuth.Use(endpoints.PanicMiddleware)
 	routerWithoutAuth.HandleFunc("/verifycortex", endpoints.VerifyCortex).Methods("GET")
+	routerWithoutAuth.HandleFunc("/batch/{apiName}", endpoints.SubmitJob).Methods("POST")
+	routerWithoutAuth.HandleFunc("/batch/{apiName}/{jobID}", endpoints.GetJob).Methods("GET")
+	routerWithoutAuth.HandleFunc("/batch/{apiName}/{jobID}", endpoints.StopJob).Methods("DELETE")
+	routerWithoutAuth.HandleFunc("/logs/{apiName}/{jobID}", endpoints.ReadJobLogs)
 
 	routerWithAuth := router.NewRoute().Subrouter()
 

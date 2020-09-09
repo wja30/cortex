@@ -33,6 +33,7 @@ import (
 	"github.com/cortexlabs/cortex/pkg/lib/errors"
 	"github.com/cortexlabs/cortex/pkg/lib/files"
 	"github.com/cortexlabs/cortex/pkg/lib/k8s"
+	libmath "github.com/cortexlabs/cortex/pkg/lib/math"
 	"github.com/cortexlabs/cortex/pkg/lib/pointer"
 	"github.com/cortexlabs/cortex/pkg/lib/regex"
 	"github.com/cortexlabs/cortex/pkg/lib/sets/strset"
@@ -46,36 +47,81 @@ import (
 
 var AutoscalingTickInterval = 10 * time.Second
 
-func apiValidation(provider types.ProviderType) *cr.StructValidation {
-	return &cr.StructValidation{
-		StructFieldValidations: []*cr.StructFieldValidation{
-			{
-				StructField: "Name",
-				StringValidation: &cr.StringValidation{
-					Required:  true,
-					DNS1035:   true,
-					MaxLength: 42, // k8s adds 21 characters to the pod name, and 63 is the max before it starts to truncate
-				},
-			},
-			{
-				StructField: "Endpoint",
-				StringPtrValidation: &cr.StringPtrValidation{
-					Validator: urls.ValidateEndpoint,
-					MaxLength: 1000, // no particular reason other than it works
-				},
-			},
-			{
-				StructField: "LocalPort",
-				IntPtrValidation: &cr.IntPtrValidation{
-					GreaterThan:       pointer.Int(0),
-					LessThanOrEqualTo: pointer.Int(math.MaxUint16),
-				},
-			},
+func apiValidation(provider types.ProviderType, resource userconfig.Resource) *cr.StructValidation {
+	structFieldValidations := []*cr.StructFieldValidation{}
+	switch resource.Kind {
+	case userconfig.RealtimeAPIKind:
+		structFieldValidations = append(resourceStructValidations,
 			predictorValidation(),
-			monitoringValidation(),
+			networkingValidation(resource.Kind),
 			computeValidation(provider),
+			monitoringValidation(),
 			autoscalingValidation(provider),
 			updateStrategyValidation(provider),
+		)
+	case userconfig.BatchAPIKind:
+		structFieldValidations = append(resourceStructValidations,
+			predictorValidation(),
+			networkingValidation(resource.Kind),
+			computeValidation(provider),
+		)
+	case userconfig.TrafficSplitterKind:
+		structFieldValidations = append(resourceStructValidations,
+			multiAPIsValidation(),
+			networkingValidation(resource.Kind),
+		)
+	}
+	return &cr.StructValidation{
+		StructFieldValidations: structFieldValidations,
+	}
+}
+
+var resourceStructValidations = []*cr.StructFieldValidation{
+	{
+		StructField: "Name",
+		StringValidation: &cr.StringValidation{
+			Required:  true,
+			DNS1035:   true,
+			MaxLength: 42, // k8s adds 21 characters to the pod name, and 63 is the max before it starts to truncate
+		},
+	},
+	{
+		StructField: "Kind",
+		StringValidation: &cr.StringValidation{
+			Required:      true,
+			AllowedValues: userconfig.KindStrings(),
+		},
+		Parser: func(str string) (interface{}, error) {
+			return userconfig.KindFromString(str), nil
+		},
+	},
+}
+
+func multiAPIsValidation() *cr.StructFieldValidation {
+	return &cr.StructFieldValidation{
+		StructField: "APIs",
+		StructListValidation: &cr.StructListValidation{
+			Required:         true,
+			TreatNullAsEmpty: true,
+			StructValidation: &cr.StructValidation{
+				StructFieldValidations: []*cr.StructFieldValidation{
+					{
+						StructField: "Name",
+						StringValidation: &cr.StringValidation{
+							Required:   true,
+							AllowEmpty: false,
+						},
+					},
+					{
+						StructField: "Weight",
+						Int32Validation: &cr.Int32Validation{
+							Required:             true,
+							GreaterThanOrEqualTo: pointer.Int32(0),
+							LessThanOrEqualTo:    pointer.Int32(100),
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -103,15 +149,21 @@ func predictorValidation() *cr.StructFieldValidation {
 					},
 				},
 				{
-					StructField:         "Model",
+					StructField:         "ModelPath",
 					StringPtrValidation: &cr.StringPtrValidation{},
 				},
 				{
 					StructField: "PythonPath",
 					StringPtrValidation: &cr.StringPtrValidation{
-						AllowEmpty: true,
+						AllowEmpty:       false,
+						DisallowedValues: []string{".", "./", "./."},
 						Validator: func(path string) (string, error) {
-							return s.EnsureSuffix(path, "/"), nil
+							if files.IsAbsOrTildePrefixed(path) {
+								return "", ErrorMustBeRelativeProjectPath(path)
+							}
+							path = strings.TrimPrefix(path, "./")
+							path = s.EnsureSuffix(path, "/")
+							return path, nil
 						},
 					},
 				},
@@ -129,6 +181,21 @@ func predictorValidation() *cr.StructFieldValidation {
 						Required:           false,
 						AllowEmpty:         true,
 						DockerImageOrEmpty: true,
+					},
+				},
+				{
+					StructField: "ProcessesPerReplica",
+					Int32Validation: &cr.Int32Validation{
+						Default:              1,
+						GreaterThanOrEqualTo: pointer.Int32(1),
+						LessThanOrEqualTo:    pointer.Int32(100),
+					},
+				},
+				{
+					StructField: "ThreadsPerProcess",
+					Int32Validation: &cr.Int32Validation{
+						Default:              1,
+						GreaterThanOrEqualTo: pointer.Int32(1),
 					},
 				},
 				{
@@ -152,6 +219,8 @@ func predictorValidation() *cr.StructFieldValidation {
 					StructField:         "SignatureKey",
 					StringPtrValidation: &cr.StringPtrValidation{},
 				},
+				multiModelValidation(),
+				serverSideBatchingValidation(),
 			},
 		},
 	}
@@ -180,6 +249,43 @@ func monitoringValidation() *cr.StructFieldValidation {
 					},
 				},
 			},
+		},
+	}
+}
+
+func networkingValidation(kind userconfig.Kind) *cr.StructFieldValidation {
+	structFieldValidation := []*cr.StructFieldValidation{
+		{
+			StructField: "Endpoint",
+			StringPtrValidation: &cr.StringPtrValidation{
+				Validator: urls.ValidateEndpoint,
+				MaxLength: 1000, // no particular reason other than it works
+			},
+		},
+		{
+			StructField: "APIGateway",
+			StringValidation: &cr.StringValidation{
+				AllowedValues: userconfig.APIGatewayTypeStrings(),
+				Default:       userconfig.PublicAPIGatewayType.String(),
+			},
+			Parser: func(str string) (interface{}, error) {
+				return userconfig.APIGatewayTypeFromString(str), nil
+			},
+		},
+	}
+	if kind == userconfig.RealtimeAPIKind {
+		structFieldValidation = append(structFieldValidation, &cr.StructFieldValidation{
+			StructField: "LocalPort",
+			IntPtrValidation: &cr.IntPtrValidation{
+				GreaterThan:       pointer.Int(0),
+				LessThanOrEqualTo: pointer.Int(math.MaxUint16),
+			},
+		})
+	}
+	return &cr.StructFieldValidation{
+		StructField: "Networking",
+		StructValidation: &cr.StructValidation{
+			StructFieldValidations: structFieldValidation,
 		},
 	}
 }
@@ -221,6 +327,13 @@ func computeValidation(provider types.ProviderType) *cr.StructFieldValidation {
 						GreaterThanOrEqualTo: pointer.Int64(0),
 					},
 				},
+				{
+					StructField: "Inf",
+					Int64Validation: &cr.Int64Validation{
+						Default:              0,
+						GreaterThanOrEqualTo: pointer.Int64(0),
+					},
+				},
 			},
 		},
 	}
@@ -257,21 +370,6 @@ func autoscalingValidation(provider types.ProviderType) *cr.StructFieldValidatio
 					},
 				},
 				{
-					StructField: "WorkersPerReplica",
-					Int32Validation: &cr.Int32Validation{
-						Default:              1,
-						GreaterThanOrEqualTo: pointer.Int32(1),
-						LessThanOrEqualTo:    pointer.Int32(20),
-					},
-				},
-				{
-					StructField: "ThreadsPerWorker",
-					Int32Validation: &cr.Int32Validation{
-						Default:              1,
-						GreaterThanOrEqualTo: pointer.Int32(1),
-					},
-				},
-				{
 					StructField: "TargetReplicaConcurrency",
 					Float64PtrValidation: &cr.Float64PtrValidation{
 						GreaterThan: pointer.Float64(0),
@@ -280,7 +378,7 @@ func autoscalingValidation(provider types.ProviderType) *cr.StructFieldValidatio
 				{
 					StructField: "MaxReplicaConcurrency",
 					Int64Validation: &cr.Int64Validation{
-						Default:           1024,
+						Default:           consts.DefaultMaxReplicaConcurrency,
 						GreaterThan:       pointer.Int64(0),
 						LessThanOrEqualTo: pointer.Int64(math.MaxUint16),
 					},
@@ -378,6 +476,73 @@ func updateStrategyValidation(provider types.ProviderType) *cr.StructFieldValida
 	}
 }
 
+func multiModelValidation() *cr.StructFieldValidation {
+	return &cr.StructFieldValidation{
+		StructField: "Models",
+		StructListValidation: &cr.StructListValidation{
+			Required:         false,
+			TreatNullAsEmpty: true,
+			StructValidation: &cr.StructValidation{
+				StructFieldValidations: []*cr.StructFieldValidation{
+					{
+						StructField: "Name",
+						StringValidation: &cr.StringValidation{
+							Required:                   true,
+							AllowEmpty:                 false,
+							DisallowedValues:           []string{consts.SingleModelName},
+							AlphaNumericDashUnderscore: true,
+						},
+					},
+					{
+						StructField: "ModelPath",
+						StringValidation: &cr.StringValidation{
+							Required:   true,
+							AllowEmpty: false,
+						},
+					},
+					{
+						StructField: "SignatureKey",
+						StringPtrValidation: &cr.StringPtrValidation{
+							Required:   false,
+							AllowEmpty: false,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func serverSideBatchingValidation() *cr.StructFieldValidation {
+	return &cr.StructFieldValidation{
+		StructField: "ServerSideBatching",
+		StructValidation: &cr.StructValidation{
+			Required:          false,
+			DefaultNil:        true,
+			AllowExplicitNull: true,
+			StructFieldValidations: []*cr.StructFieldValidation{
+				{
+					StructField: "MaxBatchSize",
+					Int32Validation: &cr.Int32Validation{
+						Required:             true,
+						GreaterThanOrEqualTo: pointer.Int32(2),
+						LessThanOrEqualTo:    pointer.Int32(1024), // this is an arbitrary limit
+					},
+				},
+				{
+					StructField: "BatchInterval",
+					StringValidation: &cr.StringValidation{
+						Required: true,
+					},
+					Parser: cr.DurationParser(&cr.DurationValidation{
+						GreaterThan: pointer.Duration(libtime.MustParseDuration("0s")),
+					}),
+				},
+			},
+		},
+	}
+}
+
 func surgeOrUnavailableValidator(str string) (string, error) {
 	if strings.HasSuffix(str, "%") {
 		parsed, ok := s.ParseInt32(strings.TrimSuffix(str, "%"))
@@ -400,31 +565,70 @@ func surgeOrUnavailableValidator(str string) (string, error) {
 	return str, nil
 }
 
-func ExtractAPIConfigs(configBytes []byte, provider types.ProviderType, projectFiles ProjectFiles, filePath string) ([]userconfig.API, error) {
+var resourceStructValidation = cr.StructValidation{
+	AllowExtraFields:       true,
+	StructFieldValidations: resourceStructValidations,
+}
+
+func ExtractAPIConfigs(configBytes []byte, provider types.ProviderType, configFileName string) ([]userconfig.API, error) {
 	var err error
 
 	configData, err := cr.ReadYAMLBytes(configBytes)
 	if err != nil {
-		return nil, errors.Wrap(err, filePath)
+		return nil, errors.Wrap(err, configFileName)
 	}
 
 	configDataSlice, ok := cast.InterfaceToStrInterfaceMapSlice(configData)
 	if !ok {
-		return nil, errors.Wrap(ErrorMalformedConfig(), filePath)
+		return nil, errors.Wrap(ErrorMalformedConfig(), configFileName)
 	}
+
 	apis := make([]userconfig.API, len(configDataSlice))
 	for i, data := range configDataSlice {
 		api := userconfig.API{}
-		errs := cr.Struct(&api, data, apiValidation(provider))
+		var resourceStruct userconfig.Resource
+		errs := cr.Struct(&resourceStruct, data, &resourceStructValidation)
 		if errors.HasError(errs) {
 			name, _ := data[userconfig.NameKey].(string)
-			err = errors.Wrap(errors.FirstError(errs...), userconfig.IdentifyAPI(filePath, name, i))
-			return nil, errors.Append(err, fmt.Sprintf("\n\napi configuration schema can be found here: https://docs.cortex.dev/v/%s/deployments/api-configuration", consts.CortexVersionMinor))
+			kindString, _ := data[userconfig.KindKey].(string)
+			kind := userconfig.KindFromString(kindString)
+			err = errors.Wrap(errors.FirstError(errs...), userconfig.IdentifyAPI(configFileName, name, kind, i))
+			switch provider {
+			case types.LocalProviderType:
+				return nil, errors.Append(err, fmt.Sprintf("\n\napi configuration schema for Realtime API can be found at https://docs.cortex.dev/v/%s/deployments/realtime-api/api-configuration", consts.CortexVersionMinor))
+			case types.AWSProviderType:
+				return nil, errors.Append(err, fmt.Sprintf("\n\napi configuration schema can be found here:\n  → Realtime API: https://docs.cortex.dev/v/%s/deployments/realtime-api/api-configuration\n  → Batch API: https://docs.cortex.dev/v/%s/deployments/batch-api/api-configuration\n  → Traffic Splitter: https://docs.cortex.dev/v/%s/deployments/realtime-api/traffic-splitter", consts.CortexVersionMinor, consts.CortexVersionMinor, consts.CortexVersionMinor))
+			}
 		}
-		api.Index = i
-		api.FilePath = filePath
 
-		api.ApplyDefaultDockerPaths()
+		if resourceStruct.Kind == userconfig.BatchAPIKind || resourceStruct.Kind == userconfig.TrafficSplitterKind {
+			if provider == types.LocalProviderType {
+				return nil, errors.Wrap(ErrorKindIsNotSupportedByProvider(resourceStruct.Kind, types.LocalProviderType), userconfig.IdentifyAPI(configFileName, resourceStruct.Name, resourceStruct.Kind, i))
+			}
+		}
+
+		errs = cr.Struct(&api, data, apiValidation(provider, resourceStruct))
+		if errors.HasError(errs) {
+			name, _ := data[userconfig.NameKey].(string)
+			kindString, _ := data[userconfig.KindKey].(string)
+			kind := userconfig.KindFromString(kindString)
+			err = errors.Wrap(errors.FirstError(errs...), userconfig.IdentifyAPI(configFileName, name, kind, i))
+			switch kind {
+			case userconfig.RealtimeAPIKind:
+				return nil, errors.Append(err, fmt.Sprintf("\n\napi configuration schema for Realtime API can be found at https://docs.cortex.dev/v/%s/deployments/realtime-api/api-configuration", consts.CortexVersionMinor))
+			case userconfig.BatchAPIKind:
+				return nil, errors.Append(err, fmt.Sprintf("\n\napi configuration schema for Batch API can be found at https://docs.cortex.dev/v/%s/deployments/batch-api/api-configuration", consts.CortexVersionMinor))
+			case userconfig.TrafficSplitterKind:
+				return nil, errors.Append(err, fmt.Sprintf("\n\napi configuration schema for Traffic Splitter can be found at https://docs.cortex.dev/v/%s/deployments/realtime-api/traffic-splitter", consts.CortexVersionMinor))
+			}
+		}
+
+		api.Index = i
+		api.FileName = configFileName
+
+		if resourceStruct.Kind == userconfig.RealtimeAPIKind || resourceStruct.Kind == userconfig.BatchAPIKind {
+			api.ApplyDefaultDockerPaths()
+		}
 
 		apis[i] = api
 	}
@@ -438,40 +642,64 @@ func ValidateAPI(
 	providerType types.ProviderType,
 	awsClient *aws.Client,
 ) error {
-	if providerType == types.AWSProviderType && api.Endpoint == nil {
-		api.Endpoint = pointer.String("/" + api.Name)
+	if providerType == types.AWSProviderType && api.Networking.Endpoint == nil {
+		api.Networking.Endpoint = pointer.String("/" + api.Name)
 	}
 
-	if err := validatePredictor(api.Predictor, projectFiles, providerType, awsClient); err != nil {
-		return errors.Wrap(err, api.Identify(), userconfig.PredictorKey)
+	if err := validatePredictor(api, projectFiles, providerType, awsClient); err != nil {
+		return errors.Wrap(err, userconfig.PredictorKey)
 	}
 
 	if api.Autoscaling != nil { // should only be nil for local provider
-		if err := validateAutoscaling(api.Autoscaling); err != nil {
-			return errors.Wrap(err, api.Identify(), userconfig.AutoscalingKey)
+		if err := validateAutoscaling(api); err != nil {
+			return errors.Wrap(err, userconfig.AutoscalingKey)
 		}
+	}
+
+	if err := validateCompute(api, providerType); err != nil {
+		return errors.Wrap(err, userconfig.ComputeKey)
 	}
 
 	if api.UpdateStrategy != nil { // should only be nil for local provider
 		if err := validateUpdateStrategy(api.UpdateStrategy); err != nil {
-			return errors.Wrap(err, api.Identify(), userconfig.UpdateStrategyKey)
+			return errors.Wrap(err, userconfig.UpdateStrategyKey)
 		}
 	}
 
 	return nil
 }
 
-func validatePredictor(predictor *userconfig.Predictor, projectFiles ProjectFiles, providerType types.ProviderType, awsClient *aws.Client) error {
+func ValidateTrafficSplitter(
+	api *userconfig.API,
+	providerType types.ProviderType,
+	awsClient *aws.Client,
+) error {
+	if providerType == types.AWSProviderType && api.Networking.Endpoint == nil {
+		api.Networking.Endpoint = pointer.String("/" + api.Name)
+	}
+	if err := verifyTotalWeight(api.APIs); err != nil {
+		return err
+	}
+	if err := areTrafficSplitterAPIsUnique(api.APIs); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validatePredictor(api *userconfig.API, projectFiles ProjectFiles, providerType types.ProviderType, awsClient *aws.Client) error {
+	predictor := api.Predictor
+
 	switch predictor.Type {
 	case userconfig.PythonPredictorType:
 		if err := validatePythonPredictor(predictor); err != nil {
 			return err
 		}
 	case userconfig.TensorFlowPredictorType:
-		if err := validateTensorFlowPredictor(predictor, providerType, projectFiles, awsClient); err != nil {
+		if err := validateTensorFlowPredictor(api, providerType, projectFiles, awsClient); err != nil {
 			return err
 		}
-		if err := validateDockerImagePath(predictor.TensorFlowServingImage, awsClient); err != nil {
+		if err := validateDockerImagePath(predictor.TensorFlowServingImage, providerType, awsClient); err != nil {
 			return errors.Wrap(err, userconfig.TensorFlowServingImageKey)
 		}
 	case userconfig.ONNXPredictorType:
@@ -480,7 +708,17 @@ func validatePredictor(predictor *userconfig.Predictor, projectFiles ProjectFile
 		}
 	}
 
-	if err := validateDockerImagePath(predictor.Image, awsClient); err != nil {
+	if api.Kind == userconfig.BatchAPIKind {
+		if predictor.ProcessesPerReplica > 1 {
+			return ErrorKeyIsNotSupportedForKind(userconfig.ProcessesPerReplicaKey, userconfig.BatchAPIKind)
+		}
+
+		if predictor.ThreadsPerProcess > 1 {
+			return ErrorKeyIsNotSupportedForKind(userconfig.ThreadsPerProcessKey, userconfig.BatchAPIKind)
+		}
+	}
+
+	if err := validateDockerImagePath(predictor.Image, providerType, awsClient); err != nil {
 		return errors.Wrap(err, userconfig.ImageKey)
 	}
 
@@ -490,15 +728,12 @@ func validatePredictor(predictor *userconfig.Predictor, projectFiles ProjectFile
 		}
 	}
 
-	if _, err := projectFiles.GetFile(predictor.Path); err != nil {
-		if errors.GetKind(err) == files.ErrFileDoesNotExist {
-			return errors.Wrap(files.ErrorFileDoesNotExist(predictor.Path), userconfig.PathKey)
-		}
-		return errors.Wrap(err, userconfig.PathKey)
+	if !projectFiles.HasFile(predictor.Path) {
+		return errors.Wrap(files.ErrorFileDoesNotExist(predictor.Path), userconfig.PathKey)
 	}
 
 	if predictor.PythonPath != nil {
-		if err := validatePythonPath(*predictor.PythonPath, projectFiles); err != nil {
+		if err := validatePythonPath(predictor, projectFiles); err != nil {
 			return errors.Wrap(err, userconfig.PythonPathKey)
 		}
 	}
@@ -508,82 +743,131 @@ func validatePredictor(predictor *userconfig.Predictor, projectFiles ProjectFile
 
 func validatePythonPredictor(predictor *userconfig.Predictor) error {
 	if predictor.SignatureKey != nil {
-		return ErrorFieldNotSupportedByPredictorType(userconfig.SignatureKeyKey, userconfig.PythonPredictorType)
+		return ErrorFieldNotSupportedByPredictorType(userconfig.SignatureKeyKey, predictor.Type)
 	}
 
-	if predictor.Model != nil {
-		return ErrorFieldNotSupportedByPredictorType(userconfig.ModelKey, userconfig.PythonPredictorType)
+	if predictor.ServerSideBatching != nil {
+		ErrorFieldNotSupportedByPredictorType(userconfig.ServerSideBatchingKey, predictor.Type)
+	}
+
+	if predictor.ModelPath != nil {
+		return ErrorFieldNotSupportedByPredictorType(userconfig.ModelPathKey, userconfig.PythonPredictorType)
+	}
+
+	if len(predictor.Models) > 0 {
+		return ErrorFieldNotSupportedByPredictorType(userconfig.ModelsKey, predictor.Type)
 	}
 
 	if predictor.TensorFlowServingImage != "" {
-		return ErrorFieldNotSupportedByPredictorType(userconfig.TensorFlowServingImageKey, userconfig.PythonPredictorType)
+		return ErrorFieldNotSupportedByPredictorType(userconfig.TensorFlowServingImageKey, predictor.Type)
 	}
 
 	return nil
 }
 
-func validateTensorFlowPredictor(predictor *userconfig.Predictor, providerType types.ProviderType, projectFiles ProjectFiles, awsClient *aws.Client) error {
-	if predictor.Model == nil {
-		return ErrorFieldMustBeDefinedForPredictorType(userconfig.ModelKey, userconfig.TensorFlowPredictorType)
+func validateTensorFlowPredictor(api *userconfig.API, providerType types.ProviderType, projectFiles ProjectFiles, awsClient *aws.Client) error {
+	predictor := api.Predictor
+
+	if predictor.ServerSideBatching != nil {
+		if api.Compute.Inf == 0 && predictor.ServerSideBatching.MaxBatchSize > predictor.ProcessesPerReplica*predictor.ThreadsPerProcess {
+			return ErrorInsufficientBatchConcurrencyLevel(predictor.ServerSideBatching.MaxBatchSize, predictor.ProcessesPerReplica, predictor.ThreadsPerProcess)
+		}
+		if api.Compute.Inf > 0 && predictor.ServerSideBatching.MaxBatchSize > predictor.ThreadsPerProcess {
+			return ErrorInsufficientBatchConcurrencyLevelInf(predictor.ServerSideBatching.MaxBatchSize, predictor.ThreadsPerProcess)
+		}
 	}
 
-	model := *predictor.Model
+	if predictor.ModelPath == nil && len(predictor.Models) == 0 {
+		return ErrorMissingModel(predictor.Type)
+	} else if predictor.ModelPath != nil && len(predictor.Models) > 0 {
+		return ErrorConflictingFields(userconfig.ModelPathKey, userconfig.ModelsKey)
+	} else if predictor.ModelPath != nil {
+		modelResource := &userconfig.ModelResource{
+			Name:         consts.SingleModelName,
+			ModelPath:    *predictor.ModelPath,
+			SignatureKey: predictor.SignatureKey,
+		}
+		// place the model into predictor.Models for ease of use
+		predictor.Models = []*userconfig.ModelResource{modelResource}
+	}
 
-	if strings.HasPrefix(model, "s3://") {
-		awsClientForBucket, err := aws.NewFromClientS3Path(model, awsClient)
+	if err := checkDuplicateModelNames(predictor.Models); err != nil {
+		return errors.Wrap(err, userconfig.ModelsKey)
+	}
+
+	for i := range predictor.Models {
+		if err := validateTensorFlowModel(predictor.Models[i], api, providerType, projectFiles, awsClient); err != nil {
+			if predictor.ModelPath == nil {
+				return errors.Wrap(err, userconfig.ModelsKey, predictor.Models[i].Name)
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateTensorFlowModel(modelResource *userconfig.ModelResource, api *userconfig.API, providerType types.ProviderType, projectFiles ProjectFiles, awsClient *aws.Client) error {
+	modelPath := modelResource.ModelPath
+
+	if strings.HasPrefix(modelPath, "s3://") {
+		awsClientForBucket, err := aws.NewFromClientS3Path(modelPath, awsClient)
 		if err != nil {
-			return errors.Wrap(err, userconfig.ModelKey)
+			return errors.Wrap(err, userconfig.ModelPathKey)
 		}
 
-		model, err := cr.S3PathValidator(model)
+		modelPath, err := cr.S3PathValidator(modelPath)
 		if err != nil {
-			return errors.Wrap(err, userconfig.ModelKey)
+			return errors.Wrap(err, userconfig.ModelPathKey)
 		}
 
-		if strings.HasSuffix(model, ".zip") {
-			if ok, err := awsClientForBucket.IsS3PathFile(model); err != nil || !ok {
-				return errors.Wrap(ErrorS3FileNotFound(model), userconfig.ModelKey)
+		if strings.HasSuffix(modelPath, ".zip") {
+			if ok, err := awsClientForBucket.IsS3PathFile(modelPath); err != nil || !ok {
+				return errors.Wrap(ErrorS3FileNotFound(modelPath), userconfig.ModelPathKey)
 			}
 		} else {
-			path, err := getTFServingExportFromS3Path(model, awsClientForBucket)
+			isNeuronExport := api.Compute.Inf > 0
+			exportPath, err := getTFServingExportFromS3Path(modelPath, isNeuronExport, awsClientForBucket)
 			if err != nil {
-				return errors.Wrap(err, userconfig.ModelKey)
-			} else if path == "" {
-				return errors.Wrap(ErrorInvalidTensorFlowDir(model), userconfig.ModelKey)
+				return errors.Wrap(err, userconfig.ModelPathKey)
 			}
-			predictor.Model = pointer.String(path)
+			if exportPath == "" {
+				if isNeuronExport {
+					return errors.Wrap(ErrorInvalidNeuronTensorFlowDir(modelPath), userconfig.ModelPathKey)
+				}
+				return errors.Wrap(ErrorInvalidTensorFlowDir(modelPath), userconfig.ModelPathKey)
+			}
+			modelResource.ModelPath = exportPath
 		}
 	} else {
 		if providerType == types.AWSProviderType {
-			return errors.Wrap(ErrorLocalModelPathNotSupportedByAWSProvider(), model, userconfig.ModelKey)
+			return errors.Wrap(ErrorLocalModelPathNotSupportedByAWSProvider(), modelPath, userconfig.ModelPathKey)
 		}
 
-		configFileDir := filepath.Dir(projectFiles.GetConfigFilePath())
-
 		var err error
-		if strings.HasPrefix(*predictor.Model, "~/") {
-			model, err = files.EscapeTilde(model)
+		if strings.HasPrefix(modelResource.ModelPath, "~/") {
+			modelPath, err = files.EscapeTilde(modelPath)
 			if err != nil {
 				return err
 			}
 		} else {
-			model = files.RelToAbsPath(*predictor.Model, configFileDir)
+			modelPath = files.RelToAbsPath(modelResource.ModelPath, projectFiles.ProjectDir())
 		}
-		if strings.HasSuffix(model, ".zip") {
-			if err := files.CheckFile(model); err != nil {
-				return errors.Wrap(err, userconfig.ModelKey)
+		if strings.HasSuffix(modelPath, ".zip") {
+			if err := files.CheckFile(modelPath); err != nil {
+				return errors.Wrap(err, userconfig.ModelPathKey)
 			}
-			predictor.Model = pointer.String(model)
-		} else if files.IsDir(model) {
-			path, err := GetTFServingExportFromLocalPath(model)
+			modelResource.ModelPath = modelPath
+		} else if files.IsDir(modelPath) {
+			path, err := GetTFServingExportFromLocalPath(modelPath)
 			if err != nil {
-				return errors.Wrap(err, userconfig.ModelKey)
+				return errors.Wrap(err, userconfig.ModelPathKey)
 			} else if path == "" {
-				return errors.Wrap(ErrorInvalidTensorFlowDir(model), userconfig.ModelKey)
+				return errors.Wrap(ErrorInvalidTensorFlowDir(modelPath), userconfig.ModelPathKey)
 			}
-			predictor.Model = pointer.String(path)
+			modelResource.ModelPath = path
 		} else {
-			return errors.Wrap(ErrorInvalidTensorFlowModelPath(), userconfig.ModelKey, model)
+			return errors.Wrap(ErrorInvalidTensorFlowModelPath(), userconfig.ModelPathKey, modelPath)
 		}
 	}
 
@@ -591,58 +875,89 @@ func validateTensorFlowPredictor(predictor *userconfig.Predictor, providerType t
 }
 
 func validateONNXPredictor(predictor *userconfig.Predictor, providerType types.ProviderType, projectFiles ProjectFiles, awsClient *aws.Client) error {
-	if predictor.Model == nil {
-		return ErrorFieldMustBeDefinedForPredictorType(userconfig.ModelKey, userconfig.ONNXPredictorType)
-	}
-
-	model := *predictor.Model
-	var err error
-	if !strings.HasSuffix(model, ".onnx") {
-		return errors.Wrap(ErrorInvalidONNXModelPath(), userconfig.ModelKey, model)
-	}
-
-	if strings.HasPrefix(model, "s3://") {
-		awsClientForBucket, err := aws.NewFromClientS3Path(model, awsClient)
-		if err != nil {
-			return errors.Wrap(err, userconfig.ModelKey)
-		}
-
-		model, err := cr.S3PathValidator(model)
-		if err != nil {
-			return errors.Wrap(err, userconfig.ModelKey)
-		}
-
-		if ok, err := awsClientForBucket.IsS3PathFile(model); err != nil || !ok {
-			return errors.Wrap(ErrorS3FileNotFound(model), userconfig.ModelKey)
-		}
-	} else {
-		if providerType == types.AWSProviderType {
-			return errors.Wrap(ErrorLocalModelPathNotSupportedByAWSProvider(), model, userconfig.ModelKey)
-		}
-
-		configFileDir := filepath.Dir(projectFiles.GetConfigFilePath())
-		if strings.HasPrefix(*predictor.Model, "~/") {
-			model, err = files.EscapeTilde(model)
-			if err != nil {
-				return err
-			}
-		} else {
-			model = files.RelToAbsPath(*predictor.Model, configFileDir)
-		}
-		if err := files.CheckFile(model); err != nil {
-			return errors.Wrap(err, userconfig.ModelKey)
-		}
-		predictor.Model = pointer.String(model)
-	}
-
 	if predictor.SignatureKey != nil {
-		return ErrorFieldNotSupportedByPredictorType(userconfig.SignatureKeyKey, userconfig.ONNXPredictorType)
+		return ErrorFieldNotSupportedByPredictorType(userconfig.SignatureKeyKey, predictor.Type)
+	}
+
+	if predictor.ServerSideBatching != nil {
+		return ErrorFieldNotSupportedByPredictorType(userconfig.ServerSideBatchingKey, predictor.Type)
+	}
+
+	if predictor.ModelPath == nil && len(predictor.Models) == 0 {
+		return ErrorMissingModel(predictor.Type)
+	} else if predictor.ModelPath != nil && len(predictor.Models) > 0 {
+		return ErrorConflictingFields(userconfig.ModelPathKey, userconfig.ModelsKey)
+	} else if predictor.ModelPath != nil {
+		modelResource := &userconfig.ModelResource{
+			Name:      consts.SingleModelName,
+			ModelPath: *predictor.ModelPath,
+		}
+		// place the model into predictor.Models for ease of use
+		predictor.Models = []*userconfig.ModelResource{modelResource}
+	}
+
+	if err := checkDuplicateModelNames(predictor.Models); err != nil {
+		return errors.Wrap(err, userconfig.ModelsKey)
+	}
+
+	for i := range predictor.Models {
+		if predictor.Models[i].SignatureKey != nil {
+			return errors.Wrap(ErrorFieldNotSupportedByPredictorType(userconfig.SignatureKeyKey, predictor.Type), userconfig.ModelsKey, predictor.Models[i].Name)
+		}
+		if err := validateONNXModel(predictor.Models[i], providerType, projectFiles, awsClient); err != nil {
+			if predictor.ModelPath == nil {
+				return errors.Wrap(err, userconfig.ModelsKey, predictor.Models[i].Name)
+			}
+			return err
+		}
 	}
 
 	return nil
 }
 
-func getTFServingExportFromS3Path(path string, awsClientForBucket *aws.Client) (string, error) {
+func validateONNXModel(modelResource *userconfig.ModelResource, providerType types.ProviderType, projectFiles ProjectFiles, awsClient *aws.Client) error {
+	modelPath := modelResource.ModelPath
+	var err error
+	if !strings.HasSuffix(modelPath, ".onnx") {
+		return errors.Wrap(ErrorInvalidONNXModelPath(), userconfig.ModelPathKey, modelPath)
+	}
+
+	if strings.HasPrefix(modelPath, "s3://") {
+		awsClientForBucket, err := aws.NewFromClientS3Path(modelPath, awsClient)
+		if err != nil {
+			return errors.Wrap(err, userconfig.ModelPathKey)
+		}
+
+		modelPath, err := cr.S3PathValidator(modelPath)
+		if err != nil {
+			return errors.Wrap(err, userconfig.ModelPathKey)
+		}
+
+		if ok, err := awsClientForBucket.IsS3PathFile(modelPath); err != nil || !ok {
+			return errors.Wrap(ErrorS3FileNotFound(modelPath), userconfig.ModelPathKey)
+		}
+	} else {
+		if providerType == types.AWSProviderType {
+			return errors.Wrap(ErrorLocalModelPathNotSupportedByAWSProvider(), modelPath, userconfig.ModelPathKey)
+		}
+
+		if strings.HasPrefix(modelResource.ModelPath, "~/") {
+			modelPath, err = files.EscapeTilde(modelPath)
+			if err != nil {
+				return err
+			}
+		} else {
+			modelPath = files.RelToAbsPath(modelResource.ModelPath, projectFiles.ProjectDir())
+		}
+		if err := files.CheckFile(modelPath); err != nil {
+			return errors.Wrap(err, userconfig.ModelPathKey)
+		}
+		modelResource.ModelPath = modelPath
+	}
+	return nil
+}
+
+func getTFServingExportFromS3Path(path string, isNeuronExport bool, awsClientForBucket *aws.Client) (string, error) {
 	if isValidTensorFlowS3Directory(path, awsClientForBucket) {
 		return path, nil
 	}
@@ -674,16 +989,23 @@ func getTFServingExportFromS3Path(path string, awsClientForBucket *aws.Client) (
 		}
 
 		possiblePath := "s3://" + filepath.Join(bucket, filepath.Join(keyParts[:len(keyParts)-1]...))
-		if version >= highestVersion && isValidTensorFlowS3Directory(possiblePath, awsClientForBucket) {
-			highestVersion = version
-			highestPath = possiblePath
+
+		if version >= highestVersion {
+			if isNeuronExport && isValidNeuronTensorFlowS3Directory(possiblePath, awsClientForBucket) {
+				highestVersion = version
+				highestPath = possiblePath
+			}
+			if !isNeuronExport && isValidTensorFlowS3Directory(possiblePath, awsClientForBucket) {
+				highestVersion = version
+				highestPath = possiblePath
+			}
 		}
 	}
 
 	return highestPath, nil
 }
 
-// IsValidTensorFlowS3Directory checks that the path contains a valid S3 directory for TensorFlow models
+// isValidTensorFlowS3Directory checks that the path contains a valid S3 directory for TensorFlow models
 // Must contain the following structure:
 // - 1523423423/ (version prefix, usually a timestamp)
 // 		- saved_model.pb
@@ -703,6 +1025,20 @@ func isValidTensorFlowS3Directory(path string, awsClientForBucket *aws.Client) b
 	); err != nil || !valid {
 		return false
 	}
+	return true
+}
+
+// isValidNeuronTensorFlowS3Directory checks that the path contains a valid S3 directory for Neuron TensorFlow models
+// Must contain the following structure:
+// - 1523423423/ (version prefix, usually a timestamp)
+// 		- saved_model.pb
+func isValidNeuronTensorFlowS3Directory(path string, awsClient *aws.Client) bool {
+	if valid, err := awsClient.IsS3PathFile(
+		aws.JoinS3Path(path, "saved_model.pb"),
+	); err != nil || !valid {
+		return false
+	}
+
 	return true
 }
 
@@ -766,23 +1102,20 @@ func IsValidTensorFlowLocalDirectory(path string) (bool, error) {
 	return false, nil
 }
 
-func validatePythonPath(pythonPath string, projectFiles ProjectFiles) error {
-	validPythonPath := false
-	for _, fileKey := range projectFiles.GetAllPaths() {
-		if strings.HasPrefix(fileKey, pythonPath) {
-			validPythonPath = true
-			break
-		}
+func validatePythonPath(predictor *userconfig.Predictor, projectFiles ProjectFiles) error {
+	if !projectFiles.HasDir(*predictor.PythonPath) {
+		return ErrorPythonPathNotFound(*predictor.PythonPath)
 	}
-	if !validPythonPath {
-		return files.ErrorFileDoesNotExist(pythonPath)
-	}
+
 	return nil
 }
 
-func validateAutoscaling(autoscaling *userconfig.Autoscaling) error {
+func validateAutoscaling(api *userconfig.API) error {
+	autoscaling := api.Autoscaling
+	predictor := api.Predictor
+
 	if autoscaling.TargetReplicaConcurrency == nil {
-		autoscaling.TargetReplicaConcurrency = pointer.Float64(float64(autoscaling.WorkersPerReplica * autoscaling.ThreadsPerWorker))
+		autoscaling.TargetReplicaConcurrency = pointer.Float64(float64(predictor.ProcessesPerReplica * predictor.ThreadsPerProcess))
 	}
 
 	if *autoscaling.TargetReplicaConcurrency > float64(autoscaling.MaxReplicaConcurrency) {
@@ -799,6 +1132,36 @@ func validateAutoscaling(autoscaling *userconfig.Autoscaling) error {
 
 	if autoscaling.InitReplicas < autoscaling.MinReplicas {
 		return ErrorInitReplicasLessThanMin(autoscaling.InitReplicas, autoscaling.MinReplicas)
+	}
+
+	if api.Compute.Inf > 0 {
+		numNeuronCores := api.Compute.Inf * consts.NeuronCoresPerInf
+		processesPerReplica := int64(predictor.ProcessesPerReplica)
+		if !libmath.IsDivisibleByInt64(numNeuronCores, processesPerReplica) {
+			return ErrorInvalidNumberOfInfProcesses(processesPerReplica, api.Compute.Inf, numNeuronCores)
+		}
+	}
+
+	return nil
+}
+
+func validateCompute(api *userconfig.API, providerType types.ProviderType) error {
+	compute := api.Compute
+
+	if compute.Inf > 0 && providerType == types.LocalProviderType {
+		return ErrorUnsupportedLocalComputeResource(userconfig.InfKey)
+	}
+
+	if compute.Inf > 0 && api.Predictor.Type == userconfig.ONNXPredictorType {
+		return ErrorFieldNotSupportedByPredictorType(userconfig.InfKey, api.Predictor.Type)
+	}
+
+	if compute.GPU > 0 && compute.Inf > 0 {
+		return ErrorComputeResourceConflict(userconfig.GPUKey, userconfig.InfKey)
+	}
+
+	if compute.Inf > 1 {
+		return ErrorInvalidNumberOfInfs(compute.Inf)
 	}
 
 	return nil
@@ -828,12 +1191,37 @@ func FindDuplicateNames(apis []userconfig.API) []userconfig.API {
 	return nil
 }
 
-func validateDockerImagePath(image string, awsClient *aws.Client) error {
+func checkDuplicateModelNames(modelResources []*userconfig.ModelResource) error {
+	names := strset.New()
+
+	for _, modelResource := range modelResources {
+		if names.Has(modelResource.Name) {
+			return ErrorDuplicateModelNames(modelResource.Name)
+		}
+		names.Add(modelResource.Name)
+	}
+
+	return nil
+}
+
+func validateDockerImagePath(image string, providerType types.ProviderType, awsClient *aws.Client) error {
 	if consts.DefaultImagePathsSet.Has(image) {
 		return nil
 	}
 	if _, err := cr.ValidateImageVersion(image, consts.CortexVersion); err != nil {
 		return err
+	}
+
+	dockerClient, err := docker.GetDockerClient()
+	if err != nil {
+		return err
+	}
+
+	if providerType == types.LocalProviderType {
+		// short circuit if the image is already available locally
+		if err := docker.CheckLocalImageAccessible(dockerClient, image); err == nil {
+			return nil
+		}
 	}
 
 	dockerAuth := docker.NoAuth
@@ -871,13 +1259,38 @@ func validateDockerImagePath(image string, awsClient *aws.Client) error {
 		}
 	}
 
-	dockerClient, err := docker.GetDockerClient()
-	if err != nil {
+	if err := docker.CheckImageAccessible(dockerClient, image, dockerAuth); err != nil {
 		return err
 	}
 
-	if err := docker.CheckImageAccessible(dockerClient, image, dockerAuth); err != nil {
-		return err
+	return nil
+}
+
+func verifyTotalWeight(apis []*userconfig.TrafficSplit) error {
+	totalWeight := int32(0)
+	for _, api := range apis {
+		totalWeight += api.Weight
+	}
+	if totalWeight == 100 {
+		return nil
+	}
+	return errors.Wrap(ErrorIncorrectTrafficSplitterWeightTotal(totalWeight), userconfig.APIsKey)
+}
+
+// areTrafficSplitterAPIsUnique gives error if the same API is used multiple times in TrafficSplitter
+func areTrafficSplitterAPIsUnique(apis []*userconfig.TrafficSplit) error {
+	names := make(map[string][]userconfig.TrafficSplit)
+	for _, api := range apis {
+		names[api.Name] = append(names[api.Name], *api)
+	}
+	var notUniqueAPIs []string
+	for name := range names {
+		if len(names[name]) > 1 {
+			notUniqueAPIs = append(notUniqueAPIs, names[name][0].Name)
+		}
+	}
+	if len(notUniqueAPIs) > 0 {
+		return errors.Wrap(ErrorTrafficSplitterAPIsNotUnique(notUniqueAPIs), userconfig.APIsKey)
 	}
 	return nil
 }

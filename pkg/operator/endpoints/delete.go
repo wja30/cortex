@@ -17,12 +17,9 @@ limitations under the License.
 package endpoints
 
 import (
-	"fmt"
 	"net/http"
 
-	"github.com/cortexlabs/cortex/pkg/lib/telemetry"
-	"github.com/cortexlabs/cortex/pkg/operator/operator"
-	"github.com/cortexlabs/cortex/pkg/operator/schema"
+	"github.com/cortexlabs/cortex/pkg/operator/resources"
 	"github.com/gorilla/mux"
 )
 
@@ -30,33 +27,10 @@ func Delete(w http.ResponseWriter, r *http.Request) {
 	apiName := mux.Vars(r)["apiName"]
 	keepCache := getOptionalBoolQParam("keepCache", false, r)
 
-	isDeployed, err := operator.IsAPIDeployed(apiName)
+	response, err := resources.DeleteAPI(apiName, keepCache)
 	if err != nil {
 		respondError(w, r, err)
 		return
-	}
-
-	if !isDeployed {
-		// Delete anyways just to be sure everything is deleted
-		go func() {
-			err = operator.DeleteAPI(apiName, keepCache)
-			if err != nil {
-				telemetry.Error(err)
-			}
-		}()
-
-		respondErrorCode(w, r, http.StatusNotFound, operator.ErrorAPINotDeployed(apiName))
-		return
-	}
-
-	err = operator.DeleteAPI(apiName, keepCache)
-	if err != nil {
-		respondError(w, r, err)
-		return
-	}
-
-	response := schema.DeleteResponse{
-		Message: fmt.Sprintf("deleting %s", apiName),
 	}
 	respond(w, response)
 }

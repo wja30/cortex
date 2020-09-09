@@ -33,6 +33,7 @@ import (
 	"github.com/cortexlabs/cortex/pkg/lib/exit"
 	"github.com/cortexlabs/cortex/pkg/lib/parallel"
 	"github.com/cortexlabs/cortex/pkg/lib/print"
+	"github.com/cortexlabs/cortex/pkg/lib/slices"
 	dockertypes "github.com/docker/docker/api/types"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
@@ -142,17 +143,8 @@ func PullImage(image string, encodedAuthConfig string, pullVerbosity PullVerbosi
 		return false, err
 	}
 
-	existingImages, err := dockerClient.ImageList(context.Background(), dockertypes.ImageListOptions{})
-	if err != nil {
-		return false, WrapDockerError(err)
-	}
-
-	for _, existingImage := range existingImages {
-		for _, tag := range existingImage.RepoTags {
-			if tag == image {
-				return false, nil
-			}
-		}
+	if err := CheckLocalImageAccessible(dockerClient, image); err == nil {
+		return false, nil
 	}
 
 	pullOutput, err := dockerClient.ImagePull(context.Background(), image, dockertypes.ImagePullOptions{
@@ -169,12 +161,34 @@ func PullImage(image string, encodedAuthConfig string, pullVerbosity PullVerbosi
 		jsonmessage.DisplayJSONMessagesStream(pullOutput, os.Stderr, termFd, isTerm, nil)
 		fmt.Println()
 	case PrintDots:
+		var err error
 		fmt.Printf("￮ downloading docker image %s ", image)
-		defer fmt.Print(" ✓\n")
+		defer func() {
+			if err == nil {
+				fmt.Print(" ✓\n")
+			} else {
+				fmt.Print(" x\n")
+			}
+		}()
+		d := json.NewDecoder(pullOutput)
+		var result jsonmessage.JSONMessage
 		dotCron := cron.Run(print.Dot, nil, 2*time.Second)
 		defer dotCron.Cancel()
-		// wait until the pull has completed
-		if _, err := ioutil.ReadAll(pullOutput); err != nil {
+		for {
+			if e := d.Decode(&result); e != nil {
+				if e == io.EOF {
+					return true, nil
+				}
+				err = e
+				return false, err
+			}
+
+			if result.Error != nil {
+				err = result.Error
+				break
+			}
+		}
+		if err != nil {
 			return false, err
 		}
 	default:
@@ -244,4 +258,30 @@ func CheckImageAccessible(dockerClient *Client, dockerImage, authConfig string) 
 		return ErrorImageInaccessible(dockerImage, err)
 	}
 	return nil
+}
+
+func CheckLocalImageAccessible(dockerClient *Client, dockerImage string) error {
+	images, err := dockerClient.ImageList(context.Background(), dockertypes.ImageListOptions{})
+	if err != nil {
+		return WrapDockerError(err)
+	}
+
+	// in docker, missing tag implies "latest"
+	if ExtractImageTag(dockerImage) == "" {
+		dockerImage = fmt.Sprintf("%s:latest", dockerImage)
+	}
+
+	for _, image := range images {
+		if slices.HasString(image.RepoTags, dockerImage) {
+			return nil
+		}
+	}
+	return ErrorImageInaccessible(dockerImage, nil)
+}
+
+func ExtractImageTag(dockerImage string) string {
+	if colonIndex := strings.LastIndex(dockerImage, ":"); colonIndex != -1 {
+		return dockerImage[colonIndex+1:]
+	}
+	return ""
 }

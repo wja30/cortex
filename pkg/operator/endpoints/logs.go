@@ -19,7 +19,9 @@ package endpoints
 import (
 	"net/http"
 
-	"github.com/cortexlabs/cortex/pkg/operator/operator"
+	"github.com/cortexlabs/cortex/pkg/operator/resources"
+	"github.com/cortexlabs/cortex/pkg/operator/resources/realtimeapi"
+	"github.com/cortexlabs/cortex/pkg/types/userconfig"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
@@ -27,12 +29,17 @@ import (
 func ReadLogs(w http.ResponseWriter, r *http.Request) {
 	apiName := mux.Vars(r)["apiName"]
 
-	isDeployed, err := operator.IsAPIDeployed(apiName)
+	deployedResource, err := resources.GetDeployedResourceByName(apiName)
 	if err != nil {
 		respondError(w, r, err)
 		return
-	} else if !isDeployed {
-		respondError(w, r, operator.ErrorAPINotDeployed(apiName))
+	}
+
+	if deployedResource.Kind == userconfig.BatchAPIKind {
+		respondError(w, r, ErrorLogsJobIDRequired(*deployedResource))
+		return
+	} else if deployedResource.Kind != userconfig.RealtimeAPIKind {
+		respondError(w, r, resources.ErrorOperationIsOnlySupportedForKind(*deployedResource, userconfig.RealtimeAPIKind))
 		return
 	}
 
@@ -44,5 +51,5 @@ func ReadLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer socket.Close()
 
-	operator.ReadLogs(apiName, socket)
+	realtimeapi.ReadLogs(apiName, socket)
 }

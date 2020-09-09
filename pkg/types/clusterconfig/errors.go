@@ -34,6 +34,7 @@ const (
 	ErrIncompatibleSpotInstanceTypeMemory     = "clusterconfig.incompatible_spot_instance_type_memory"
 	ErrIncompatibleSpotInstanceTypeCPU        = "clusterconfig.incompatible_spot_instance_type_cpu"
 	ErrIncompatibleSpotInstanceTypeGPU        = "clusterconfig.incompatible_spot_instance_type_gpu"
+	ErrIncompatibleSpotInstanceTypeInf        = "clusterconfig.incompatible_spot_instance_type_inf"
 	ErrSpotPriceGreaterThanTargetOnDemand     = "clusterconfig.spot_price_greater_than_target_on_demand"
 	ErrSpotPriceGreaterThanMaxPrice           = "clusterconfig.spot_price_greater_than_max_price"
 	ErrInstanceTypeNotSupported               = "clusterconfig.instance_type_not_supported"
@@ -51,6 +52,7 @@ const (
 	ErrInvalidInstanceType                    = "clusterconfig.invalid_instance_type"
 	ErrIOPSNotSupported                       = "clusterconfig.iops_not_supported"
 	ErrIOPSTooLarge                           = "clusterconfig.iops_too_large"
+	ErrCantOverrideDefaultTag                 = "clusterconfig.cant_override_default_tag"
 	ErrSSLCertificateARNNotFound              = "clusterconfig.ssl_certificate_arn_not_found"
 )
 
@@ -103,10 +105,17 @@ func ErrorIncompatibleSpotInstanceTypeGPU(target aws.InstanceMetadata, suggested
 	})
 }
 
-func ErrorSpotPriceGreaterThanTargetOnDemand(suggestedSpotPrice float64, target aws.InstanceMetadata, suggested aws.InstanceMetadata) error {
+func ErrorIncompatibleSpotInstanceTypeInf(suggested aws.InstanceMetadata) error {
+	return errors.WithStack(&errors.Error{
+		Kind:    ErrIncompatibleSpotInstanceTypeInf,
+		Message: fmt.Sprintf("all instances must have at least 1 Inferentia chip, but %s doesn't have any", suggested.Type),
+	})
+}
+
+func ErrorSpotPriceGreaterThanTargetOnDemand(spotPrice float64, target aws.InstanceMetadata, suggested aws.InstanceMetadata) error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrSpotPriceGreaterThanTargetOnDemand,
-		Message: fmt.Sprintf("%s will not be allocated because its current spot price is $%g which is greater than %s's on-demand price of $%g", suggested.Type, suggestedSpotPrice, target.Type, target.Price),
+		Message: fmt.Sprintf("%s will not be allocated because its current spot price is $%g which is greater than %s's on-demand price of $%g", suggested.Type, spotPrice, target.Type, target.Price),
 	})
 }
 
@@ -127,7 +136,7 @@ func ErrorInstanceTypeNotSupported(instanceType string) error {
 func ErrorConfiguredWhenSpotIsNotEnabled(configKey string) error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrConfiguredWhenSpotIsNotEnabled,
-		Message: fmt.Sprintf("%s cannot be specified unless spot is enabled", configKey),
+		Message: fmt.Sprintf("%s cannot be specified unless spot is enabled (to enable spot instances, set `%s: true` in your cluster configuration file)", configKey, SpotKey),
 	})
 }
 
@@ -141,7 +150,7 @@ func ErrorOnDemandBaseCapacityGreaterThanMax(onDemandBaseCapacity int64, max int
 func ErrorConfigCannotBeChangedOnUpdate(configKey string, prevVal interface{}) error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrConfigCannotBeChangedOnUpdate,
-		Message: fmt.Sprintf("modifying %s in a running cluster is not supported, please set %s to its previous value: %s", configKey, configKey, s.UserStr(prevVal)),
+		Message: fmt.Sprintf("modifying %s in a running cluster is not supported, please set %s to its previous value (%s)", configKey, configKey, s.UserStr(prevVal)),
 	})
 }
 
@@ -227,9 +236,16 @@ func ErrorIOPSTooLarge(iops int64, volumeSize int64) error {
 	})
 }
 
+func ErrorCantOverrideDefaultTag() error {
+	return errors.WithStack(&errors.Error{
+		Kind:    ErrCantOverrideDefaultTag,
+		Message: fmt.Sprintf("the \"%s\" tag cannot be overridden (it is set by default, and it must always be equal to your cluster name)", ClusterNameTag),
+	})
+}
+
 func ErrorSSLCertificateARNNotFound(sslCertificateARN string, region string) error {
 	return errors.WithStack(&errors.Error{
 		Kind:    ErrSSLCertificateARNNotFound,
-		Message: fmt.Sprintf("unable to find the specified ssl certificate in region %s: %s", region, sslCertificateARN),
+		Message: fmt.Sprintf("unable to find the specified ssl certificate in %s: %s", region, sslCertificateARN),
 	})
 }
