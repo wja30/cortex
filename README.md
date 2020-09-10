@@ -4,6 +4,7 @@
 # Machine learning model serving infrastructure (2020.09.10.13:00)
 (2020.09.10.13:00) 3rd 4th
 origin 1st
+origin 2nd
 <br>
 
 <!-- Delete on release branches -->
