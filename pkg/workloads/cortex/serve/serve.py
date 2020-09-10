@@ -310,7 +310,7 @@ def start_fn():
         client = api.predictor.initialize_client(
             tf_serving_host=tf_serving_host, tf_serving_port=tf_serving_port
         )
-        cx_logger().info("loading the predictor from {}".format(api.predictor.path))
+        cx_logger().info("(jkim)loading the predictor from {}".format(api.predictor.path))
         predictor_impl = api.predictor.initialize_impl(project_dir, client, raw_api_spec, None)
 
         local_cache["api"] = api
