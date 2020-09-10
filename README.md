@@ -1,12 +1,7 @@
 <!-- Delete on release branches -->
-<img src='https://s3-us-west-2.amazonaws.com/cortex-public/logo.png' height='88'>
 
 # Machine learning model serving infrastructure (2020.09.10.13:00)
-(2020.09.10.13:00) 3rd 4th
-origin 1st
-origin 2nd
-origin 3rd
-origin 4th
+
 <br>
 
 <!-- Delete on release branches -->
