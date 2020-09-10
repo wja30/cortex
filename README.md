@@ -1,9 +1,7 @@
 <!-- Delete on release branches -->
-<<<<<<< HEAD
 <img src='https://s3-us-west-2.amazonaws.com/cortex-public/logo.png' height='88'>
 
-# Machine learning model serving infrastructure (j.kim)
-wja300 branch
+# Machine learning model serving infrastructure (2020.09.10.13:00)
 
 <br>
 
@@ -13,9 +11,6 @@ wja300 branch
 
 <!-- Set header Cache-Control=no-cache on the S3 object metadata (see https://help.github.com/en/articles/about-anonymized-image-urls) -->
 ![Demo](https://d1zqebknpdh033.cloudfront.net/demo/gif/v0.13_2.gif)
-=======
-<img src='https://s3-us-west-2.amazonaws.com/cortex-public/logo.png' height='42'>
->>>>>>> 261e0c19099ae123295f8dce4daba79cbeba44c8
 
 <br>
 
