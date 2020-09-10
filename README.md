@@ -1,4 +1,5 @@
 <!-- Delete on release branches -->
+절로 킴
 
 # Machine learning model serving infrastructure (2020.09.10.13:00)
 
