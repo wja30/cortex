@@ -77,8 +77,6 @@ def main(payload, endpoint, processes, threads, samples, time_based):
         data = json.dumps(payload_data)
 
     print("Starting the inference throughput test...")
-    print(f"endpoint : {endpoint}")
-    print(f"payload : {payload}")
     results = []
     start = time.time()
     with concurrent.futures.ProcessPoolExecutor(max_workers=processes) as executor:
