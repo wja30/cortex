@@ -151,6 +151,8 @@ def task(data, endpoint, samples, time_based):
             except Exception as e:
                 print(e)
                 break
+    #        print(f"req : {requests}")
+            print(f"resp : {resp}")
             time.sleep(0.1)
             counter += 1
         return [counter]
