@@ -5,6 +5,7 @@ go 1.14
 require (
 	github.com/Azure/go-ansiterm v0.0.0-20170929234023-d6e3b3328b78 // indirect
 	github.com/Microsoft/go-winio v0.4.14 // indirect
+	github.com/VojtechVitek/rerun v0.0.2 // indirect
 	github.com/aws/amazon-vpc-cni-k8s v1.6.0
 	github.com/aws/aws-sdk-go v1.33.13
 	github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 // indirect
@@ -38,7 +39,9 @@ require (
 	github.com/ugorji/go/codec v1.1.7
 	github.com/xlab/treeprint v1.0.0
 	github.com/xtgo/uuid v0.0.0-20140804021211-a0b114877d4c // indirect
-	golang.org/x/sys v0.0.0-20200509044756-6aff5f38e54f // indirect
+	golang.org/x/lint v0.0.0-20200302205851-738671d3881b // indirect
+	golang.org/x/sys v0.0.0-20200909081042-eff7692f9009 // indirect
+	golang.org/x/tools v0.0.0-20200909210914-44a2922940c2 // indirect
 	gopkg.in/karalabe/cookiejar.v2 v2.0.0-20150724131613-8dcd6a7f4951
 	gopkg.in/segmentio/analytics-go.v3 v3.1.0
 	gotest.tools v2.2.0+incompatible // indirect
