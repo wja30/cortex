@@ -15,7 +15,7 @@ from validator_collection import checkers
 
 
 global count
-count = 3
+count = 0
 
 @click.command(help="Program for testing the throughput of Cortex-deployed APIs.")
 @click.argument("endpoint1", type=str, envvar="ENDPOINT1")
@@ -139,14 +139,19 @@ def task(data, endpoint, samples, time_based):
     else:
         return
     
-    count += 1
     #print(f"count {count}")
  
     if time_based == 0.0:
         for i in range(samples):
             try:
+                x = random.randrange(0, 100)
+                if(x >= 0 and x < 25): x = 0
+                if(x >= 25 and x < 65): x = 1
+                if(x >= 65 and x < 100): x = 2
+                count += 1
+                #print(f"count {count}")
                 resp = requests.post(
-                    endpoint[count % 3],
+                    endpoint[x],
                     data=data,
                     headers=headers,
                     timeout=timeout,
@@ -161,8 +166,14 @@ def task(data, endpoint, samples, time_based):
         counter = 0
         while start + time_based >= time.time():
             try:
+                x = random.randrange(0, 100)
+                if(x >= 0 and x < 25): x = 0
+                if(x >= 25 and x < 65): x = 1
+                if(x >= 65 and x < 100): x = 2
+                count += 1
+                #print(f"count {count}")
                 resp = requests.post(
-                    endpoint[count % 3],
+                    endpoint[x],
                     data=data,
                     headers=headers,
                     timeout=timeout,
